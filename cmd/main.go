@@ -37,6 +37,7 @@ import (
 
 	discordv1alpha1 "github.com/waifulabs/discord.js-kuberscaler/api/v1alpha1"
 	"github.com/waifulabs/discord.js-kuberscaler/internal/controller"
+	"github.com/waifulabs/discord.js-kuberscaler/internal/discord"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -145,8 +146,9 @@ func main() {
 	}
 
 	if err = (&controller.DiscordGatewayReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:        mgr.GetClient(),
+		Scheme:        mgr.GetScheme(),
+		DiscordClient: discord.NewClient(),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "DiscordGateway")
 		os.Exit(1)
