@@ -45,6 +45,11 @@ type GatewayBotResponse struct {
 	SessionStartLimit SessionStartLimit `json:"session_start_limit"`
 }
 
+// GatewayClient is an interface for Discord gateway operations.
+type GatewayClient interface {
+	GetGatewayBot(ctx context.Context, token string) (*GatewayBotResponse, error)
+}
+
 // Client is a Discord API client for gateway operations.
 type Client struct {
 	httpClient *http.Client

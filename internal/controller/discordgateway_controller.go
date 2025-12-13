@@ -60,7 +60,7 @@ const (
 type DiscordGatewayReconciler struct {
 	client.Client
 	Scheme        *runtime.Scheme
-	DiscordClient *discord.Client
+	DiscordClient discord.GatewayClient
 }
 
 // +kubebuilder:rbac:groups=discord.nerdz.io,resources=discordgateways,verbs=get;list;watch;create;update;patch;delete
