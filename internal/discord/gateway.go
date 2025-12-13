@@ -81,6 +81,10 @@ func (c *Client) GetGatewayBot(ctx context.Context, token string) (*GatewayBotRe
 	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusTooManyRequests {
+		retryAfter := resp.Header.Get("Retry-After")
+		if retryAfter != "" {
+			return nil, fmt.Errorf("rate limited by Discord API, retry after %s seconds", retryAfter)
+		}
 		return nil, fmt.Errorf("rate limited by Discord API")
 	}
 

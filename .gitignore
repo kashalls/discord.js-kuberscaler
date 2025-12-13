@@ -13,6 +13,7 @@
 
 # Build output
 bin/manager
+bin/golangci-lint*
 
 # Code coverage profiles and other test artifacts
 *.out
