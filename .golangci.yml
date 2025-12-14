@@ -53,9 +53,7 @@ linters:
     - prealloc
     - revive
     - staticcheck
-    # typecheck disabled due to known issue with golangci-lint v1.59.1 and Go 1.24.11
-    # The code compiles and tests pass, but typecheck has import errors
-    # - typecheck
+    - typecheck
     - unconvert
     - unparam
     - unused
