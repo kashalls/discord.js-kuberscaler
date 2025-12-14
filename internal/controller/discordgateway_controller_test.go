@@ -21,13 +21,14 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-
 	discordv1alpha1 "github.com/waifulabs/discord.js-kuberscaler/api/v1alpha1"
+	"github.com/waifulabs/discord.js-kuberscaler/internal/discord"
 )
 
 var _ = Describe("DiscordGateway Controller", func() {
@@ -46,12 +47,37 @@ var _ = Describe("DiscordGateway Controller", func() {
 			By("creating the custom resource for the Kind DiscordGateway")
 			err := k8sClient.Get(ctx, typeNamespacedName, discordgateway)
 			if err != nil && errors.IsNotFound(err) {
+				// Create a test Secret first
+				secret := &corev1.Secret{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "test-token",
+						Namespace: "default",
+					},
+					StringData: map[string]string{
+						"token": "test-token-value",
+					},
+				}
+				Expect(k8sClient.Create(ctx, secret)).To(Succeed())
+
 				resource := &discordv1alpha1.DiscordGateway{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      resourceName,
 						Namespace: "default",
 					},
-					// TODO(user): Specify other spec details if needed.
+					Spec: discordv1alpha1.DiscordGatewaySpec{
+						Image: "test:latest",
+						TokenSecretRef: discordv1alpha1.SecretReference{
+							Name: "test-token",
+							Key:  "token",
+						},
+						Sharding: discordv1alpha1.ShardingConfig{
+							Mode: discordv1alpha1.ShardingModeFixed,
+							FixedShardCount: func() *int32 {
+								i := int32(1)
+								return &i
+							}(),
+						},
+					},
 				}
 				Expect(k8sClient.Create(ctx, resource)).To(Succeed())
 			}
@@ -68,17 +94,31 @@ var _ = Describe("DiscordGateway Controller", func() {
 		})
 		It("should successfully reconcile the resource", func() {
 			By("Reconciling the created resource")
+			// Create a mock Discord client
+			mockClient := discord.NewMockClient()
+			mockClient.GetGatewayBotFunc = func(ctx context.Context, token string) (*discord.GatewayBotResponse, error) {
+				return &discord.GatewayBotResponse{
+					URL:    "wss://gateway.discord.gg",
+					Shards: 1,
+					SessionStartLimit: discord.SessionStartLimit{
+						Total:          1000,
+						Remaining:      999,
+						ResetAfter:     86400000,
+						MaxConcurrency: 1,
+					},
+				}, nil
+			}
+
 			controllerReconciler := &DiscordGatewayReconciler{
-				Client: k8sClient,
-				Scheme: k8sClient.Scheme(),
+				Client:        k8sClient,
+				Scheme:        k8sClient.Scheme(),
+				DiscordClient: mockClient,
 			}
 
 			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: typeNamespacedName,
 			})
 			Expect(err).NotTo(HaveOccurred())
-			// TODO(user): Add more specific assertions depending on your controller's reconciliation logic.
-			// Example: If you expect a certain status condition after reconciliation, verify it here.
 		})
 	})
 })
