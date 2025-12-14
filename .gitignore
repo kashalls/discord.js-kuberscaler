@@ -14,6 +14,8 @@
 # Build output
 bin/manager
 bin/golangci-lint*
+bin/setup-envtest*
+bin/k8s/
 
 # Code coverage profiles and other test artifacts
 *.out
