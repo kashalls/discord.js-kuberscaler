@@ -1,0 +1,27 @@
+# permissions for end users to edit discordgateways.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  labels:
+    app.kubernetes.io/name: discord-kuberscaler
+    app.kubernetes.io/managed-by: kustomize
+  name: discordgateway-editor-role
+rules:
+- apiGroups:
+  - discord.nerdz.io
+  resources:
+  - discordgateways
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - discord.nerdz.io
+  resources:
+  - discordgateways/status
+  verbs:
+  - get

@@ -1,0 +1,64 @@
+run:
+  timeout: 5m
+  allow-parallel-runners: true
+
+issues:
+  # don't skip warning about doc comments
+  # don't exclude the default set of lint
+  exclude-use-default: false
+  # restore some of the defaults
+  # (fill in the rest as needed)
+  exclude-rules:
+    - path: "api/*"
+      linters:
+        - lll
+    - path: "internal/*"
+      linters:
+        - dupl
+        - lll
+    - path: "_test\\.go"
+      linters:
+        - typecheck
+        - staticcheck
+        - unused
+    - path: "test/*"
+      linters:
+        - typecheck
+        - staticcheck
+        - unused
+    # Skip typecheck errors in controller due to known golangci-lint bug with Go 1.24
+    - linters:
+        - typecheck
+      text: "could not import k8s.io/apimachinery/pkg/types"
+    - linters:
+        - typecheck
+      text: "undefined.*type.*DiscordGatewayReconciler"
+linters:
+  disable-all: true
+  enable:
+    - dupl
+    - errcheck
+    - exportloopref
+    - ginkgolinter
+    - goconst
+    - gocyclo
+    - gofmt
+    - goimports
+    - gosimple
+    - govet
+    - ineffassign
+    - lll
+    - misspell
+    - nakedret
+    - prealloc
+    - revive
+    - staticcheck
+    - typecheck
+    - unconvert
+    - unparam
+    - unused
+
+linters-settings:
+  revive:
+    rules:
+      - name: comment-spacings
