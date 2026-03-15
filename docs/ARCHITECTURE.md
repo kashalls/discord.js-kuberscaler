@@ -64,10 +64,8 @@ Creates StatefulSets with:
 - **One pod per shard** (replica count = shard count)
 - **Stable identities** (`<name>-0`, `<name>-1`, etc.)
 - **Environment variables**:
-  - `DISCORD_SHARD_ID`: Pod name (contains ordinal)
-  - `DISCORD_SHARD_COUNT`: Total shard count
-  - `DISCORD_MAX_CONCURRENCY`: From Discord API
-  - `DISCORD_INTENTS`: Intent configuration
+  - `SHARDS`: Pod ordinal (via `apps.kubernetes.io/pod-index` label, K8s 1.28+); read natively by discord.js v14
+  - `SHARD_COUNT`: Total shard count; read natively by discord.js v14
   - `DISCORD_TOKEN`: From Secret
 
 Pod management:
@@ -156,7 +154,7 @@ Shard IDs are derived from pod ordinals:
 - Pod `my-bot-1` → Shard ID 1
 - Pod `my-bot-N` → Shard ID N
 
-The bot application parses this from the `DISCORD_SHARD_ID` environment variable (which contains the pod name via downward API).
+The pod ordinal is projected into the `SHARDS` environment variable via the downward API using the `apps.kubernetes.io/pod-index` label (automatically set by Kubernetes 1.28+ on StatefulSet pods). discord.js v14 reads `SHARDS` and `SHARD_COUNT` natively without any application-side parsing.
 
 ## RBAC Permissions
 

@@ -21,9 +21,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// EDIT THIS FILE!  THIS IS SCAFFOLDING FOR YOU TO OWN!
-// NOTE: json tags are required.  Any new fields you add must have json tags for the fields to be serialized.
-
 // ShardingMode defines the mode for determining shard count.
 // +kubebuilder:validation:Enum=Recommended;Fixed
 type ShardingMode string
@@ -61,35 +58,29 @@ type ShardingConfig struct {
 	MaxShards *int32 `json:"maxShards,omitempty"`
 }
 
-// IntentsConfig defines Discord intent configuration.
-type IntentsConfig struct {
-	// Privileged indicates whether privileged intents are enabled
-	// +optional
-	Privileged bool `json:"privileged,omitempty"`
-}
-
-// PodTemplate defines the pod template configuration.
-type PodTemplate struct {
-	// Resources defines the resource requirements for shard pods
-	// +optional
-	Resources corev1.ResourceRequirements `json:"resources,omitempty"`
-}
-
 // DiscordGatewaySpec defines the desired state of DiscordGateway.
 type DiscordGatewaySpec struct {
-	// Image is the container image for shard pods
-	Image string `json:"image"`
-	// TokenSecretRef references the Secret containing the bot token
+	// TokenSecretRef references the Secret containing the bot token. The operator
+	// reads this token solely to call Discord's /gateway/bot API to determine the
+	// recommended shard count. It is not automatically injected into pods — add it
+	// to spec.template.spec.containers[*].env yourself (via secretKeyRef or
+	// an ExternalSecret).
 	TokenSecretRef SecretReference `json:"tokenSecretRef"`
-	// Sharding defines the sharding configuration
+
+	// Sharding defines how the shard count is determined.
 	// +optional
 	Sharding ShardingConfig `json:"sharding,omitempty"`
-	// Intents defines the Discord intents configuration
-	// +optional
-	Intents IntentsConfig `json:"intents,omitempty"`
-	// PodTemplate defines the pod template configuration
-	// +optional
-	PodTemplate PodTemplate `json:"podTemplate,omitempty"`
+
+	// Template is the pod template used for every shard pod. The operator sets
+	// spec.replicas on the resulting StatefulSet and injects two environment
+	// variables into every container (unless already declared by the user):
+	//
+	//   SHARDS      – numeric ordinal of the pod; discord.js v14 reads this natively
+	//   SHARD_COUNT – total number of shards; discord.js v14 reads this natively
+	//
+	// Everything else — container image, resource limits, volumes, secrets,
+	// additional env vars — is the user's responsibility inside this template.
+	Template corev1.PodTemplateSpec `json:"template"`
 }
 
 // DiscordGatewayStatus defines the observed state of DiscordGateway.
@@ -113,7 +104,6 @@ type DiscordGatewayStatus struct {
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
-// +kubebuilder:printcolumn:name="Image",type=string,JSONPath=`.spec.image`
 // +kubebuilder:printcolumn:name="Mode",type=string,JSONPath=`.spec.sharding.mode`
 // +kubebuilder:printcolumn:name="Applied Shards",type=integer,JSONPath=`.status.appliedShards`
 // +kubebuilder:printcolumn:name="Recommended",type=integer,JSONPath=`.status.recommendedShards`

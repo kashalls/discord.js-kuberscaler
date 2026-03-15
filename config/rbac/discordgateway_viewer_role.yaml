@@ -8,7 +8,7 @@ metadata:
   name: discordgateway-viewer-role
 rules:
 - apiGroups:
-  - discord.nerdz.io
+  - discord.ok8.sh
   resources:
   - discordgateways
   verbs:
@@ -16,7 +16,7 @@ rules:
   - list
   - watch
 - apiGroups:
-  - discord.nerdz.io
+  - discord.ok8.sh
   resources:
   - discordgateways/status
   verbs:

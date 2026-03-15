@@ -1,241 +1,256 @@
 # Discord Gateway Sharding Operator
 
-A Kubernetes operator that manages Discord gateway shard scaling for Discord bots.
+A Kubernetes operator that runs one Discord gateway shard per pod — no multi-process sharding manager required.
 
-## Overview
+## How It Works
 
-This operator automates the management of Discord gateway shards by:
+1. You create a `DiscordGateway` custom resource with your pod template.
+2. The operator calls Discord's `/gateway/bot` API to get the recommended shard count.
+3. The operator creates a StatefulSet scaled to that many replicas using your template.
+4. Each pod is one shard. Pod `my-bot-0` handles shard 0, `my-bot-1` handles shard 1, and so on.
 
-- Defining a **Custom Resource (CRD)** for Discord bots (`DiscordGateway`)
-- Creating and managing a **StatefulSet** where each pod represents exactly one shard
-- Fetching recommended shard counts from Discord's API
-- Scaling shards automatically based on Discord's recommendations or fixed configuration
+The operator injects two environment variables into every container (you can override either by declaring them yourself in your template):
 
-## Features
+| Variable | Value | Notes |
+|---|---|---|
+| `SHARDS` | Numeric pod ordinal, e.g. `3` | discord.js v14 reads this natively via `JSON.parse(process.env.SHARDS)` |
+| `SHARD_COUNT` | Total number of shards | discord.js v14 reads this natively via `process.env.SHARD_COUNT` |
 
-- **Automatic Shard Scaling**: Queries Discord's `/gateway/bot` endpoint for recommended shard count
-- **Flexible Sharding Modes**:
-  - `Recommended`: Uses Discord's recommended shard count with optional min/max constraints
-  - `Fixed`: Uses a user-defined fixed shard count
-- **StatefulSet Management**: Creates one pod per shard with proper environment variables
-- **GitOps Compatible**: Designed to work with ArgoCD/Flux
-- **Status Tracking**: Reports applied shards, recommended shards, and sync status
+Requires Kubernetes 1.28+ (uses the `apps.kubernetes.io/pod-index` label added automatically to StatefulSet pods).
+
+Everything else — your container image, `DISCORD_TOKEN`, resource limits, volumes, sidecars — goes in `spec.template`, which is a standard Kubernetes `PodTemplateSpec`.
 
 ## Quick Start
 
-### Prerequisites
-
-- Kubernetes cluster (v1.28+)
-- kubectl configured to access your cluster
-- Discord bot token stored in a Kubernetes Secret
-
-### Installation
-
-1. Install the CRDs:
+### 1. Install the CRD and operator
 
 ```bash
-kubectl apply -f config/crd/bases/discord.nerdz.io_discordgateways.yaml
-```
-
-2. Deploy the operator:
-
-```bash
-kubectl apply -f config/manager/manager.yaml
+kubectl apply -f config/crd/bases/discord.ok8.sh_discordgateways.yaml
 kubectl apply -f config/rbac/
+kubectl apply -f config/manager/manager.yaml
 ```
 
-3. Create a Secret with your Discord bot token:
+### 2. Store your bot token in a Secret
 
 ```bash
 kubectl create secret generic discord-bot-token \
   --from-literal=token=YOUR_BOT_TOKEN_HERE
 ```
 
-4. Create a DiscordGateway resource:
+Or use an [ExternalSecret](https://external-secrets.io/) to sync it from Vault, AWS Secrets Manager, etc. — just make sure the resulting Secret name and key match what you put in `spec.tokenSecretRef` and your container's `secretKeyRef`.
+
+### 3. Create a DiscordGateway resource
 
 ```yaml
-apiVersion: discord.nerdz.io/v1alpha1
+apiVersion: discord.ok8.sh/v1alpha1
 kind: DiscordGateway
 metadata:
-  name: my-discord-bot
+  name: my-bot
 spec:
-  image: ghcr.io/example/discord-bot:latest
+  tokenSecretRef:
+    name: discord-bot-token  # used by the operator to call Discord's API
+    key: token
+
+  sharding:
+    mode: Recommended  # let Discord decide the shard count
+    minShards: 1
+    maxShards: 20
+
+  template:
+    spec:
+      containers:
+        - name: bot
+          image: ghcr.io/my-org/my-discord-bot:latest
+          env:
+            - name: DISCORD_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: discord-bot-token
+                  key: token
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+```
+
+```bash
+kubectl apply -f discordgateway.yaml
+kubectl get discordgateway my-bot
+```
+
+### 4. Write your bot to read the injected variables
+
+The operator injects `SHARDS` (the pod ordinal) and `SHARD_COUNT`. discord.js v14 reads these natively — no parsing required:
+
+**JavaScript / TypeScript (discord.js v14)**
+
+```js
+const { Client, GatewayIntentBits } = require('discord.js');
+
+// discord.js reads SHARDS and SHARD_COUNT automatically from the environment.
+// No manual configuration needed — just create the client normally.
+const client = new Client({
+  intents: [GatewayIntentBits.Guilds],
+});
+
+client.login(process.env.DISCORD_TOKEN);
+```
+
+**Python (discord.py)**
+
+```python
+import os, discord
+
+shard_id = int(os.environ['SHARDS'])
+shard_count = int(os.environ['SHARD_COUNT'])
+
+client = discord.AutoShardedClient(
+    shard_id=shard_id,
+    shard_count=shard_count,
+)
+client.run(os.environ['DISCORD_TOKEN'])
+```
+
+**Go**
+
+```go
+shardID, _ := strconv.Atoi(os.Getenv("SHARDS"))
+shardCount, _ := strconv.Atoi(os.Getenv("SHARD_COUNT"))
+```
+
+## Using ExternalSecrets
+
+If you manage secrets externally (Vault, AWS Secrets Manager, GCP Secret Manager, etc.) you can use the [External Secrets Operator](https://external-secrets.io/) to provision the Secret and reference it in `spec.tokenSecretRef` and your container env exactly the same way:
+
+```yaml
+# ExternalSecret creates a Secret named "discord-bot-token"
+apiVersion: external-secrets.io/v1beta1
+kind: ExternalSecret
+metadata:
+  name: discord-bot-token
+spec:
+  refreshInterval: 1h
+  secretStoreRef:
+    name: vault-backend
+    kind: ClusterSecretStore
+  target:
+    name: discord-bot-token
+  data:
+    - secretKey: token
+      remoteRef:
+        key: discord/my-bot
+        property: token
+```
+
+Then your `DiscordGateway` references it the same way:
+
+```yaml
+spec:
   tokenSecretRef:
     name: discord-bot-token
     key: token
-  sharding:
-    mode: Recommended
-    minShards: 1
-    maxShards: 10
-  intents:
-    privileged: false
-  podTemplate:
-    resources:
-      requests:
-        cpu: 100m
-        memory: 128Mi
-      limits:
-        cpu: 500m
-        memory: 512Mi
+  template:
+    spec:
+      containers:
+        - name: bot
+          image: ghcr.io/my-org/my-discord-bot:latest
+          env:
+            - name: DISCORD_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: discord-bot-token
+                  key: token
 ```
 
-### Bot Application Requirements
+## Sharding Modes
 
-Your Discord bot application should read these environment variables:
+### Recommended (default)
 
-- `DISCORD_TOKEN`: Bot token (automatically injected from Secret)
-- `DISCORD_SHARD_ID`: Pod name in format `<gateway-name>-<ordinal>` (use downward API via `metadata.name`)
-- `DISCORD_SHARD_COUNT`: Total number of shards
-- `DISCORD_MAX_CONCURRENCY`: Maximum concurrent shard connections allowed
-- `DISCORD_INTENTS`: Intent configuration (currently "0" or "privileged")
+The operator calls Discord's API on every reconcile (every 10 minutes) and uses the shard count Discord recommends, clamped to your min/max bounds:
 
-**Important**: The `DISCORD_SHARD_ID` environment variable contains the full pod name (e.g., `my-discord-bot-0`). Your bot application must parse the shard ID from this name.
-
-Example for parsing shard ID from pod name:
-
-```javascript
-// Pod names are formatted as: <gateway-name>-<ordinal>
-// The ordinal IS the shard ID
-const podName = process.env.DISCORD_SHARD_ID || process.env.HOSTNAME;
-const shardId = parseInt(podName.split('-').pop());
-const shardCount = parseInt(process.env.DISCORD_SHARD_COUNT);
-
-console.log(`Starting shard ${shardId} of ${shardCount}`);
+```yaml
+sharding:
+  mode: Recommended
+  minShards: 2    # never fewer than 2
+  maxShards: 50   # never more than 50
 ```
 
-```python
-# Python example
-import os
+### Fixed
 
-pod_name = os.environ.get('DISCORD_SHARD_ID') or os.environ.get('HOSTNAME')
-shard_id = int(pod_name.split('-')[-1])
-shard_count = int(os.environ['DISCORD_SHARD_COUNT'])
+Use a specific shard count regardless of what Discord recommends. Useful for large bots with predictable guild counts or when you want deterministic deployments:
 
-print(f"Starting shard {shard_id} of {shard_count}")
+```yaml
+sharding:
+  mode: Fixed
+  fixedShardCount: 16
 ```
 
-```go
-// Go example
-package main
+## Checking Status
 
-import (
-    "fmt"
-    "os"
-    "strconv"
-    "strings"
-)
+```bash
+kubectl get discordgateway
+# NAME     MODE          APPLIED SHARDS   RECOMMENDED   READY   AGE
+# my-bot   Recommended   4                4             True    2m
 
-func getShardID() (int, error) {
-    podName := os.Getenv("DISCORD_SHARD_ID")
-    if podName == "" {
-        podName = os.Getenv("HOSTNAME")
-    }
-    parts := strings.Split(podName, "-")
-    return strconv.Atoi(parts[len(parts)-1])
-}
+kubectl describe discordgateway my-bot
 ```
 
-## Architecture
+Status fields:
 
-### Components
-
-- **DiscordGateway CRD**: Defines the desired state of a Discord bot's gateway configuration
-- **Controller**: Reconciles DiscordGateway resources
-- **Discord API Client**: Fetches gateway information from Discord
-- **StatefulSet Builder**: Templates StatefulSets for shard pods
-
-### What the Operator Does
-
-- ✅ Manages shard count based on Discord recommendations
-- ✅ Creates/updates StatefulSets with proper shard configuration
-- ✅ Injects environment variables for shard ID and count
-- ✅ Reports status and conditions
-
-### What the Operator Does NOT Do
-
-- ❌ Run Discord client code or process gateway events
-- ❌ Manage application logic or business code
-- ❌ Perform cross-shard coordination
-- ❌ Implement autoscaling based on CPU/memory
+| Field | Description |
+|---|---|
+| `appliedShards` | Number of replicas currently running |
+| `recommendedShards` | What Discord's API returned |
+| `maxConcurrency` | Discord's session-start concurrency limit |
+| `lastSyncTime` | When the operator last called Discord's API |
+| `conditions` | `Ready` and `Degraded` conditions |
 
 ## API Reference
 
 ### DiscordGatewaySpec
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `image` | string | Container image for shard pods |
-| `tokenSecretRef` | SecretReference | Reference to Secret containing bot token |
-| `sharding` | ShardingConfig | Sharding configuration |
-| `intents` | IntentsConfig | Discord intents configuration |
-| `podTemplate` | PodTemplate | Pod template configuration |
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `tokenSecretRef` | SecretReference | Yes | Secret containing the bot token, used by the operator to call Discord's API |
+| `sharding` | ShardingConfig | No | Shard count configuration (defaults to Recommended) |
+| `template` | PodTemplateSpec | Yes | Standard Kubernetes pod template for shard pods |
 
 ### ShardingConfig
 
 | Field | Type | Description |
-|-------|------|-------------|
-| `mode` | enum | `Recommended` or `Fixed` |
-| `fixedShardCount` | int32 | Fixed shard count (when mode is Fixed) |
-| `minShards` | int32 | Minimum shards (Recommended mode) |
-| `maxShards` | int32 | Maximum shards (Recommended mode) |
+|---|---|---|
+| `mode` | `Recommended` \| `Fixed` | How shard count is determined (default: `Recommended`) |
+| `fixedShardCount` | int32 | Exact shard count when `mode: Fixed` |
+| `minShards` | int32 | Lower bound when `mode: Recommended` |
+| `maxShards` | int32 | Upper bound when `mode: Recommended` |
 
-### DiscordGatewayStatus
+### SecretReference
 
 | Field | Type | Description |
-|-------|------|-------------|
-| `recommendedShards` | int32 | Shard count recommended by Discord |
-| `appliedShards` | int32 | Current number of deployed shards |
-| `maxConcurrency` | int32 | Max concurrent connections from Discord |
-| `lastSyncTime` | time | Last sync with Discord API |
-| `conditions` | []Condition | Resource conditions |
+|---|---|---|
+| `name` | string | Name of the Kubernetes Secret |
+| `key` | string | Key within the Secret |
 
 ## Development
 
-### Building
-
 ```bash
-make build
-```
-
-### Running Tests
-
-```bash
-make test
-```
-
-### Running Locally
-
-```bash
-make install  # Install CRDs
-make run      # Run controller locally
-```
-
-### Building Docker Image
-
-```bash
+make build          # compile
+make test           # unit + integration tests
+make lint           # lint
+make install        # install CRDs into current cluster
+make run            # run controller locally against current cluster
 make docker-build IMG=myregistry/discord-gateway-operator:tag
-make docker-push IMG=myregistry/discord-gateway-operator:tag
+make docker-push  IMG=myregistry/discord-gateway-operator:tag
 ```
 
-## GitOps Integration
+## GitOps
 
-The operator is designed to work seamlessly with GitOps tools:
+The operator is designed for GitOps (ArgoCD, Flux):
 
-- Store `DiscordGateway` resources in Git
-- Operator manages derived resources (StatefulSets)
-- Status updates don't conflict with GitOps reconciliation
-- Owner references ensure proper resource cleanup
-
-## Contributing
-
-Contributions are welcome! Please:
-
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes
-4. Add tests
-5. Submit a pull request
+- Store your `DiscordGateway` manifests in Git.
+- The operator manages derived resources (StatefulSet, headless Service) via owner references.
+- Status updates use the `/status` subresource and don't conflict with GitOps reconciliation.
 
 ## License
 
-Apache License 2.0 - See [LICENSE](LICENSE) for details.
+Apache License 2.0 — see [LICENSE](LICENSE).

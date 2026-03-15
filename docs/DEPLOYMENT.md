@@ -12,13 +12,13 @@ This guide walks you through deploying the Discord Gateway Sharding Operator.
 ## Step 1: Install CRDs
 
 ```bash
-kubectl apply -f config/crd/bases/discord.nerdz.io_discordgateways.yaml
+kubectl apply -f config/crd/bases/discord.ok8.sh_discordgateways.yaml
 ```
 
 Verify the CRD is installed:
 
 ```bash
-kubectl get crd discordgateways.discord.nerdz.io
+kubectl get crd discordgateways.discord.ok8.sh
 ```
 
 ## Step 2: Create Namespace (Optional)

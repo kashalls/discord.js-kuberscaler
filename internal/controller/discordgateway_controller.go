@@ -63,10 +63,11 @@ type DiscordGatewayReconciler struct {
 	DiscordClient discord.GatewayClient
 }
 
-// +kubebuilder:rbac:groups=discord.nerdz.io,resources=discordgateways,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=discord.nerdz.io,resources=discordgateways/status,verbs=get;update;patch
-// +kubebuilder:rbac:groups=discord.nerdz.io,resources=discordgateways/finalizers,verbs=update
+// +kubebuilder:rbac:groups=discord.ok8.sh,resources=discordgateways,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=discord.ok8.sh,resources=discordgateways/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=discord.ok8.sh,resources=discordgateways/finalizers,verbs=update
 // +kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=core,resources=services,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=core,resources=secrets,verbs=get;list;watch
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
@@ -85,16 +86,30 @@ func (r *DiscordGatewayReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		return ctrl.Result{}, err
 	}
 
-	// Set reconciling condition
-	meta.SetStatusCondition(&gateway.Status.Conditions, metav1.Condition{
-		Type:    ConditionTypeReady,
-		Status:  metav1.ConditionUnknown,
-		Reason:  ReasonReconciling,
-		Message: "Reconciling DiscordGateway",
-	})
-	if err := r.Status().Update(ctx, gateway); err != nil {
-		logger.Error(err, "Failed to update status")
-		return ctrl.Result{}, err
+	// Validate sharding constraints before doing any external calls.
+	if gateway.Spec.Sharding.MinShards != nil && gateway.Spec.Sharding.MaxShards != nil {
+		if *gateway.Spec.Sharding.MinShards > *gateway.Spec.Sharding.MaxShards {
+			msg := fmt.Sprintf("invalid sharding config: minShards (%d) cannot exceed maxShards (%d)",
+				*gateway.Spec.Sharding.MinShards, *gateway.Spec.Sharding.MaxShards)
+			logger.Error(nil, msg)
+			meta.SetStatusCondition(&gateway.Status.Conditions, metav1.Condition{
+				Type:    ConditionTypeDegraded,
+				Status:  metav1.ConditionTrue,
+				Reason:  ReasonFailed,
+				Message: msg,
+			})
+			meta.SetStatusCondition(&gateway.Status.Conditions, metav1.Condition{
+				Type:    ConditionTypeReady,
+				Status:  metav1.ConditionFalse,
+				Reason:  ReasonFailed,
+				Message: msg,
+			})
+			if statusErr := r.Status().Update(ctx, gateway); statusErr != nil {
+				logger.Error(statusErr, "Failed to update status")
+			}
+			// Do not requeue automatically — the user must fix their spec.
+			return ctrl.Result{}, nil
+		}
 	}
 
 	// Fetch the bot token from Secret
@@ -144,8 +159,24 @@ func (r *DiscordGatewayReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	// Calculate desired shard count
 	desiredShards := r.calculateDesiredShards(gateway, int32(gatewayInfo.Shards))
 
+	// Ensure the headless Service exists before the StatefulSet — the
+	// StatefulSet spec.serviceName must reference an existing Service.
+	if err := r.reconcileService(ctx, gateway); err != nil {
+		logger.Error(err, "Failed to reconcile headless Service")
+		meta.SetStatusCondition(&gateway.Status.Conditions, metav1.Condition{
+			Type:    ConditionTypeReady,
+			Status:  metav1.ConditionFalse,
+			Reason:  ReasonFailed,
+			Message: fmt.Sprintf("Failed to reconcile Service: %v", err),
+		})
+		if statusErr := r.Status().Update(ctx, gateway); statusErr != nil {
+			logger.Error(statusErr, "Failed to update status")
+		}
+		return ctrl.Result{}, err
+	}
+
 	// Reconcile StatefulSet
-	if err := r.reconcileStatefulSet(ctx, gateway, desiredShards, gateway.Status.MaxConcurrency); err != nil {
+	if err := r.reconcileStatefulSet(ctx, gateway, desiredShards); err != nil {
 		logger.Error(err, "Failed to reconcile StatefulSet")
 		meta.SetStatusCondition(&gateway.Status.Conditions, metav1.Condition{
 			Type:    ConditionTypeReady,
@@ -233,52 +264,74 @@ func (r *DiscordGatewayReconciler) calculateDesiredShards(gateway *discordv1alph
 	return desired
 }
 
-// reconcileStatefulSet creates or updates the StatefulSet for the gateway.
-func (r *DiscordGatewayReconciler) reconcileStatefulSet(ctx context.Context, gateway *discordv1alpha1.DiscordGateway, replicas int32, maxConcurrency int32) error {
+// reconcileService ensures the headless Service owned by this DiscordGateway exists.
+// The Service is only created, never updated — its spec.clusterIP is immutable and
+// there are no other mutable fields of interest. If the Service is deleted, the
+// owner-reference watch will trigger a reconcile that recreates it.
+func (r *DiscordGatewayReconciler) reconcileService(ctx context.Context, gateway *discordv1alpha1.DiscordGateway) error {
 	logger := log.FromContext(ctx)
 
-	desiredSts := k8s.BuildStatefulSet(gateway, replicas, maxConcurrency)
+	desired := k8s.BuildHeadlessService(gateway)
+	if err := controllerutil.SetControllerReference(gateway, desired, r.Scheme); err != nil {
+		return fmt.Errorf("failed to set owner reference on Service: %w", err)
+	}
 
-	// Set owner reference
+	existing := &corev1.Service{}
+	err := r.Get(ctx, types.NamespacedName{Name: desired.Name, Namespace: desired.Namespace}, existing)
+	if err != nil && apierrors.IsNotFound(err) {
+		logger.Info("Creating headless Service", "name", desired.Name)
+		if createErr := r.Create(ctx, desired); createErr != nil {
+			return fmt.Errorf("failed to create Service: %w", createErr)
+		}
+		return nil
+	}
+	return err
+}
+
+// reconcileStatefulSet creates or updates the StatefulSet for the gateway.
+// On update, all mutable fields (replicas, pod template, update strategy) are
+// synced to the desired state so that image, resource, and env-var changes are
+// not silently ignored.
+func (r *DiscordGatewayReconciler) reconcileStatefulSet(ctx context.Context, gateway *discordv1alpha1.DiscordGateway, replicas int32) error {
+	logger := log.FromContext(ctx)
+
+	desiredSts := k8s.BuildStatefulSet(gateway, replicas)
+
+	// Set owner reference on the desired object so Kubernetes garbage-collects
+	// the StatefulSet when the DiscordGateway is deleted.
 	if err := controllerutil.SetControllerReference(gateway, desiredSts, r.Scheme); err != nil {
 		return fmt.Errorf("failed to set owner reference: %w", err)
 	}
 
-	// Check if StatefulSet already exists
 	existingSts := &appsv1.StatefulSet{}
 	err := r.Get(ctx, types.NamespacedName{Name: desiredSts.Name, Namespace: desiredSts.Namespace}, existingSts)
 
 	if err != nil && apierrors.IsNotFound(err) {
-		// Create the StatefulSet
 		logger.Info("Creating StatefulSet", "name", desiredSts.Name, "replicas", replicas)
-		if err := r.Create(ctx, desiredSts); err != nil {
-			return fmt.Errorf("failed to create StatefulSet: %w", err)
+		if createErr := r.Create(ctx, desiredSts); createErr != nil {
+			return fmt.Errorf("failed to create StatefulSet: %w", createErr)
 		}
 		return nil
 	} else if err != nil {
 		return fmt.Errorf("failed to get StatefulSet: %w", err)
 	}
 
-	// Update the StatefulSet if necessary
-	if existingSts.Spec.Replicas == nil || *existingSts.Spec.Replicas != replicas {
-		logger.Info("Updating StatefulSet replicas", "name", desiredSts.Name, "old", *existingSts.Spec.Replicas, "new", replicas)
-		existingSts.Spec.Replicas = &replicas
+	// Determine whether any mutable field has drifted from the desired state.
+	// spec.selector and spec.volumeClaimTemplates are immutable after creation
+	// and must not be touched here.
+	replicasDrifted := existingSts.Spec.Replicas == nil || *existingSts.Spec.Replicas != replicas
 
-		// Update environment variables
-		if len(existingSts.Spec.Template.Spec.Containers) > 0 {
-			container := &existingSts.Spec.Template.Spec.Containers[0]
-			for i, env := range container.Env {
-				if env.Name == "DISCORD_SHARD_COUNT" {
-					container.Env[i].Value = fmt.Sprintf("%d", replicas)
-				}
-				if env.Name == "DISCORD_MAX_CONCURRENCY" {
-					container.Env[i].Value = fmt.Sprintf("%d", maxConcurrency)
-				}
-			}
-		}
+	if replicasDrifted {
+		logger.Info("Updating StatefulSet", "name", desiredSts.Name, "replicas", replicas)
 
-		if err := r.Update(ctx, existingSts); err != nil {
-			return fmt.Errorf("failed to update StatefulSet: %w", err)
+		// Sync all mutable fields in one update to avoid partial drifts.
+		existingSts.Labels = desiredSts.Labels
+		existingSts.Spec.Replicas = desiredSts.Spec.Replicas
+		existingSts.Spec.Template = desiredSts.Spec.Template
+		existingSts.Spec.UpdateStrategy = desiredSts.Spec.UpdateStrategy
+
+		if updateErr := r.Update(ctx, existingSts); updateErr != nil {
+			return fmt.Errorf("failed to update StatefulSet: %w", updateErr)
 		}
 	}
 
@@ -290,6 +343,7 @@ func (r *DiscordGatewayReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&discordv1alpha1.DiscordGateway{}).
 		Owns(&appsv1.StatefulSet{}).
+		Owns(&corev1.Service{}).
 		Named("discordgateway").
 		Complete(r)
 }

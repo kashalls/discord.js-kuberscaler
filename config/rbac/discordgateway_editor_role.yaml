@@ -8,7 +8,7 @@ metadata:
   name: discordgateway-editor-role
 rules:
 - apiGroups:
-  - discord.nerdz.io
+  - discord.ok8.sh
   resources:
   - discordgateways
   verbs:
@@ -20,7 +20,7 @@ rules:
   - update
   - watch
 - apiGroups:
-  - discord.nerdz.io
+  - discord.ok8.sh
   resources:
   - discordgateways/status
   verbs:

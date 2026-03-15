@@ -21,6 +21,7 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -39,7 +40,7 @@ var _ = Describe("DiscordGateway Controller", func() {
 
 		typeNamespacedName := types.NamespacedName{
 			Name:      resourceName,
-			Namespace: "default", // TODO(user):Modify as needed
+			Namespace: "default",
 		}
 		discordgateway := &discordv1alpha1.DiscordGateway{}
 
@@ -47,7 +48,6 @@ var _ = Describe("DiscordGateway Controller", func() {
 			By("creating the custom resource for the Kind DiscordGateway")
 			err := k8sClient.Get(ctx, typeNamespacedName, discordgateway)
 			if err != nil && errors.IsNotFound(err) {
-				// Create a test Secret first
 				secret := &corev1.Secret{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      "test-token",
@@ -65,7 +65,6 @@ var _ = Describe("DiscordGateway Controller", func() {
 						Namespace: "default",
 					},
 					Spec: discordv1alpha1.DiscordGatewaySpec{
-						Image: "test:latest",
 						TokenSecretRef: discordv1alpha1.SecretReference{
 							Name: "test-token",
 							Key:  "token",
@@ -73,9 +72,32 @@ var _ = Describe("DiscordGateway Controller", func() {
 						Sharding: discordv1alpha1.ShardingConfig{
 							Mode: discordv1alpha1.ShardingModeFixed,
 							FixedShardCount: func() *int32 {
-								i := int32(1)
+								i := int32(3)
 								return &i
 							}(),
+						},
+						Template: corev1.PodTemplateSpec{
+							Spec: corev1.PodSpec{
+								Containers: []corev1.Container{
+									{
+										Name:  "bot",
+										Image: "test:latest",
+										Env: []corev1.EnvVar{
+											{
+												Name: "DISCORD_TOKEN",
+												ValueFrom: &corev1.EnvVarSource{
+													SecretKeyRef: &corev1.SecretKeySelector{
+														LocalObjectReference: corev1.LocalObjectReference{
+															Name: "test-token",
+														},
+														Key: "token",
+													},
+												},
+											},
+										},
+									},
+								},
+							},
 						},
 					},
 				}
@@ -84,7 +106,6 @@ var _ = Describe("DiscordGateway Controller", func() {
 		})
 
 		AfterEach(func() {
-			// TODO(user): Cleanup logic after each test, like removing the resource instance.
 			resource := &discordv1alpha1.DiscordGateway{}
 			err := k8sClient.Get(ctx, typeNamespacedName, resource)
 			Expect(err).NotTo(HaveOccurred())
@@ -92,33 +113,106 @@ var _ = Describe("DiscordGateway Controller", func() {
 			By("Cleanup the specific resource instance DiscordGateway")
 			Expect(k8sClient.Delete(ctx, resource)).To(Succeed())
 		})
-		It("should successfully reconcile the resource", func() {
-			By("Reconciling the created resource")
-			// Create a mock Discord client
-			mockClient := discord.NewMockClient()
-			mockClient.GetGatewayBotFunc = func(ctx context.Context, token string) (*discord.GatewayBotResponse, error) {
-				return &discord.GatewayBotResponse{
-					URL:    "wss://gateway.discord.gg",
-					Shards: 1,
-					SessionStartLimit: discord.SessionStartLimit{
-						Total:          1000,
-						Remaining:      999,
-						ResetAfter:     86400000,
-						MaxConcurrency: 1,
-					},
-				}, nil
-			}
 
+		It("should create a StatefulSet and headless Service with the correct configuration", func() {
+			By("Reconciling the created resource")
 			controllerReconciler := &DiscordGatewayReconciler{
 				Client:        k8sClient,
 				Scheme:        k8sClient.Scheme(),
-				DiscordClient: mockClient,
+				DiscordClient: discord.NewMockClient(),
 			}
 
 			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: typeNamespacedName,
 			})
 			Expect(err).NotTo(HaveOccurred())
+
+			By("Verifying the StatefulSet was created with the correct replica count")
+			sts := &appsv1.StatefulSet{}
+			Expect(k8sClient.Get(ctx, typeNamespacedName, sts)).To(Succeed())
+			Expect(sts.Spec.Replicas).NotTo(BeNil())
+			Expect(*sts.Spec.Replicas).To(Equal(int32(3)))
+
+			By("Verifying the StatefulSet preserves the user's container image")
+			Expect(sts.Spec.Template.Spec.Containers).To(HaveLen(1))
+			Expect(sts.Spec.Template.Spec.Containers[0].Image).To(Equal("test:latest"))
+
+			By("Verifying the operator injected SHARDS and SHARD_COUNT")
+			envNames := make([]string, 0)
+			for _, e := range sts.Spec.Template.Spec.Containers[0].Env {
+				envNames = append(envNames, e.Name)
+			}
+			Expect(envNames).To(ContainElements("DISCORD_TOKEN", "SHARDS", "SHARD_COUNT"))
+
+			By("Verifying the headless Service was created")
+			svc := &corev1.Service{}
+			Expect(k8sClient.Get(ctx, typeNamespacedName, svc)).To(Succeed())
+			Expect(svc.Spec.ClusterIP).To(Equal("None"))
+
+			By("Verifying the DiscordGateway status reflects the applied shard count")
+			gw := &discordv1alpha1.DiscordGateway{}
+			Expect(k8sClient.Get(ctx, typeNamespacedName, gw)).To(Succeed())
+			Expect(gw.Status.AppliedShards).To(Equal(int32(3)))
+		})
+
+		It("should reject an invalid sharding config where minShards exceeds maxShards", func() {
+			By("Creating a DiscordGateway with minShards > maxShards")
+			invalidName := "invalid-sharding"
+			invalidNSN := types.NamespacedName{Name: invalidName, Namespace: "default"}
+
+			invalidSecret := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{Name: "invalid-token", Namespace: "default"},
+				StringData: map[string]string{"token": "test"},
+			}
+			Expect(k8sClient.Create(ctx, invalidSecret)).To(Succeed())
+
+			min, max := int32(10), int32(5)
+			invalidGW := &discordv1alpha1.DiscordGateway{
+				ObjectMeta: metav1.ObjectMeta{Name: invalidName, Namespace: "default"},
+				Spec: discordv1alpha1.DiscordGatewaySpec{
+					TokenSecretRef: discordv1alpha1.SecretReference{
+						Name: "invalid-token",
+						Key:  "token",
+					},
+					Sharding: discordv1alpha1.ShardingConfig{
+						Mode:      discordv1alpha1.ShardingModeRecommended,
+						MinShards: &min,
+						MaxShards: &max,
+					},
+					Template: corev1.PodTemplateSpec{
+						Spec: corev1.PodSpec{
+							Containers: []corev1.Container{{Name: "bot", Image: "test:latest"}},
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, invalidGW)).To(Succeed())
+
+			controllerReconciler := &DiscordGatewayReconciler{
+				Client:        k8sClient,
+				Scheme:        k8sClient.Scheme(),
+				DiscordClient: discord.NewMockClient(),
+			}
+
+			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: invalidNSN})
+			Expect(err).NotTo(HaveOccurred()) // returns nil, no requeue
+
+			By("Verifying the Degraded condition is set")
+			gw := &discordv1alpha1.DiscordGateway{}
+			Expect(k8sClient.Get(ctx, invalidNSN, gw)).To(Succeed())
+
+			var degradedCondition *metav1.Condition
+			for i := range gw.Status.Conditions {
+				if gw.Status.Conditions[i].Type == ConditionTypeDegraded {
+					degradedCondition = &gw.Status.Conditions[i]
+					break
+				}
+			}
+			Expect(degradedCondition).NotTo(BeNil())
+			Expect(degradedCondition.Status).To(Equal(metav1.ConditionTrue))
+
+			Expect(k8sClient.Delete(ctx, invalidGW)).To(Succeed())
+			Expect(k8sClient.Delete(ctx, invalidSecret)).To(Succeed())
 		})
 	})
 })

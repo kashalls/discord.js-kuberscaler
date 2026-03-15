@@ -1,4 +1,4 @@
-apiVersion: discord.nerdz.io/v1alpha1
+apiVersion: discord.ok8.sh/v1alpha1
 kind: DiscordGateway
 metadata:
   labels:
@@ -6,21 +6,47 @@ metadata:
     app.kubernetes.io/managed-by: kustomize
   name: discordgateway-sample
 spec:
-  image: ghcr.io/example/discord-bot:latest
+  # tokenSecretRef is used ONLY by the operator to call Discord's /gateway/bot
+  # API. It is not injected into pods automatically — add DISCORD_TOKEN to your
+  # container env below (via secretKeyRef or an ExternalSecret).
   tokenSecretRef:
     name: discord-bot-token
     key: token
+
   sharding:
-    mode: Recommended
+    mode: Recommended   # or Fixed
     minShards: 1
     maxShards: 10
-  intents:
-    privileged: false
-  podTemplate:
-    resources:
-      requests:
-        cpu: 100m
-        memory: 128Mi
-      limits:
-        cpu: 500m
-        memory: 512Mi
+
+  # Full pod template — you control everything here.
+  # The operator injects three env vars into every container if not already set:
+  #   DISCORD_SHARD_ID        – metadata.name of the pod, e.g. "discordgateway-sample-3"
+  #   DISCORD_SHARD_COUNT     – total number of shards (from Discord API / fixed count)
+  #   DISCORD_MAX_CONCURRENCY – Discord session-start concurrency limit
+  template:
+    spec:
+      containers:
+        - name: bot
+          image: ghcr.io/example/discord-bot:latest
+          env:
+            # Source your Discord token from the same (or a different) secret.
+            - name: DISCORD_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: discord-bot-token
+                  key: token
+            # Any additional env vars your bot needs go here.
+            # You can also use envFrom to pull in an entire Secret or ConfigMap:
+            #
+            # envFrom:
+            #   - secretRef:
+            #       name: my-bot-config
+            #   - configMapRef:
+            #       name: my-bot-env
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi

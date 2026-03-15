@@ -80,7 +80,7 @@ func (c *Client) GetGatewayBot(ctx context.Context, token string) (*GatewayBotRe
 	}
 	defer func() {
 		if err := resp.Body.Close(); err != nil {
-			// Log the error if needed, but don't override the return error
+			// Body close errors are not actionable once the response is read.
 		}
 	}()
 
