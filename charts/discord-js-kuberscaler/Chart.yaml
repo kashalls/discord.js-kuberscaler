@@ -1,0 +1,22 @@
+apiVersion: v2
+name: discord-js-kuberscaler
+description: Kubernetes operator for automatic Discord Gateway shard management
+type: application
+version: 0.1.0
+appVersion: "latest"
+keywords:
+  - discord
+  - sharding
+  - operator
+  - kubernetes
+home: https://github.com/waifulabs/discord.js-kuberscaler
+sources:
+  - https://github.com/waifulabs/discord.js-kuberscaler
+maintainers:
+  - name: waifulabs
+    url: https://github.com/waifulabs
+annotations:
+  artifacthub.io/signKey: |
+    fingerprint: keyless
+    url: https://fulcio.sigstore.dev
+  artifacthub.io/license: Apache-2.0

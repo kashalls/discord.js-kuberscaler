@@ -1,0 +1,40 @@
+Discord.js Kuberscaler operator has been installed in namespace {{ .Release.Namespace }}.
+
+To deploy a Discord bot with automatic shard management, create a DiscordSharder resource:
+
+  1. Create a Secret with your bot token:
+
+     kubectl create secret generic my-bot-token \
+       --from-literal=token=<YOUR_DISCORD_BOT_TOKEN> \
+       -n <YOUR_NAMESPACE>
+
+  2. Create a DiscordSharder resource (save as discordsharder.yaml):
+
+     apiVersion: discord.ok8.sh/v1alpha1
+     kind: DiscordSharder
+     metadata:
+       name: my-bot
+       namespace: <YOUR_NAMESPACE>
+     spec:
+       tokenSecretRef:
+         name: my-bot-token
+         key: token
+       template:
+         spec:
+           containers:
+           - name: bot
+             image: <YOUR_BOT_IMAGE>
+
+  3. Apply it:
+
+     kubectl apply -f discordsharder.yaml
+
+  4. Watch status:
+
+     kubectl get discordsharder my-bot -n <YOUR_NAMESPACE> -w
+
+The operator will query the Discord Gateway API to determine the recommended shard
+count and create a StatefulSet accordingly. Each pod receives SHARDS and SHARD_COUNT
+environment variables for your bot to consume.
+
+For more details see: https://github.com/waifulabs/discord.js-kuberscaler

@@ -111,6 +111,13 @@ var _ = Describe("DiscordSharder Controller", func() {
 
 			By("Cleanup the specific resource instance DiscordSharder")
 			Expect(k8sClient.Delete(ctx, resource)).To(Succeed())
+
+			By("Cleanup the test-token secret")
+			secret := &corev1.Secret{}
+			err = k8sClient.Get(ctx, types.NamespacedName{Name: "test-token", Namespace: "default"}, secret)
+			if err == nil {
+				Expect(k8sClient.Delete(ctx, secret)).To(Succeed())
+			}
 		})
 
 		It("should create a StatefulSet and headless Service with the correct configuration", func() {

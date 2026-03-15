@@ -1,0 +1,19 @@
+{{- if .Values.metrics.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "discord-js-kuberscaler.fullname" . }}-metrics
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "discord-js-kuberscaler.labels" . | nindent 4 }}
+    control-plane: controller-manager
+spec:
+  ports:
+  - name: https
+    port: {{ .Values.metrics.port }}
+    protocol: TCP
+    targetPort: {{ .Values.metrics.port }}
+  selector:
+    {{- include "discord-js-kuberscaler.selectorLabels" . | nindent 4 }}
+    control-plane: controller-manager
+{{- end }}

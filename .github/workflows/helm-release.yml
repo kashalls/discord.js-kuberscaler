@@ -1,0 +1,133 @@
+name: Helm Release
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*'
+    paths:
+      - 'charts/**'
+      - '.github/workflows/helm-release.yml'
+
+permissions:
+  contents: read
+  packages: write
+  id-token: write  # required for keyless cosign signing
+
+env:
+  REGISTRY: ghcr.io
+  CHART_NAME: discord-js-kuberscaler
+  CHART_PATH: charts/discord-js-kuberscaler
+
+jobs:
+  helm-release:
+    name: Package, Push & Sign
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.16.0
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Determine chart version
+        id: version
+        run: |
+          # Use git tag if on a version tag, otherwise use chart version + sha
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            VERSION="${GITHUB_REF_NAME#v}"
+          else
+            CHART_VERSION=$(grep '^version:' ${{ env.CHART_PATH }}/Chart.yaml | awk '{print $2}')
+            SHORT_SHA=$(git rev-parse --short HEAD)
+            VERSION="${CHART_VERSION}-sha.${SHORT_SHA}"
+          fi
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Chart version: ${VERSION}"
+
+      - name: Update chart version
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          # Patch Chart.yaml version field
+          sed -i "s/^version:.*/version: ${VERSION}/" ${{ env.CHART_PATH }}/Chart.yaml
+          # Patch appVersion to match image tag when on a release tag
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            APP_VERSION="${GITHUB_REF_NAME}"
+            sed -i "s/^appVersion:.*/appVersion: \"${APP_VERSION}\"/" ${{ env.CHART_PATH }}/Chart.yaml
+          fi
+
+      - name: Sync CRD from source
+        # Always keep the chart CRD in sync with the generated manifest
+        run: |
+          cp config/crd/bases/discord.ok8.sh_discordsharders.yaml \
+             ${{ env.CHART_PATH }}/crds/discord.ok8.sh_discordsharders.yaml
+
+      - name: Package chart
+        id: package
+        run: |
+          helm package ${{ env.CHART_PATH }} --destination /tmp/charts
+          PACKAGE=$(ls /tmp/charts/*.tgz)
+          echo "package=${PACKAGE}" >> "$GITHUB_OUTPUT"
+
+      - name: Push chart to OCI registry
+        id: push
+        run: |
+          OCI_REPO="oci://${{ env.REGISTRY }}/${{ github.repository_owner }}/charts"
+          VERSION="${{ steps.version.outputs.version }}"
+
+          # helm push prints "Pushed: <ref>\nDigest: <digest>" to stdout
+          PUSH_OUTPUT=$(helm push "${{ steps.package.outputs.package }}" "${OCI_REPO}" 2>&1)
+          echo "${PUSH_OUTPUT}"
+
+          DIGEST=$(echo "${PUSH_OUTPUT}" | grep '^Digest:' | awk '{print $2}')
+          REF="${{ env.REGISTRY }}/${{ github.repository_owner }}/charts/${{ env.CHART_NAME }}:${VERSION}"
+
+          echo "digest=${DIGEST}" >> "$GITHUB_OUTPUT"
+          echo "ref=${REF}" >> "$GITHUB_OUTPUT"
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Sign Helm chart
+        env:
+          REF: ${{ steps.push.outputs.ref }}
+          DIGEST: ${{ steps.push.outputs.digest }}
+        run: |
+          cosign sign --yes "${REF}@${DIGEST}"
+
+      - name: Verify signature
+        env:
+          REF: ${{ steps.push.outputs.ref }}
+          DIGEST: ${{ steps.push.outputs.digest }}
+        run: |
+          cosign verify \
+            --certificate-identity-regexp="https://github.com/${{ github.repository }}/.github/workflows/helm-release.yml" \
+            --certificate-oidc-issuer="https://token.actions.githubusercontent.com" \
+            "${REF}@${DIGEST}"
+
+      - name: Summary
+        env:
+          REF: ${{ steps.push.outputs.ref }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          echo "## Helm Chart Published" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Field | Value |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|-------|-------|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Chart | \`${REF}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Version | \`${VERSION}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "### Install" >> "$GITHUB_STEP_SUMMARY"
+          echo '```sh' >> "$GITHUB_STEP_SUMMARY"
+          echo "helm install discord-kuberscaler oci://${{ env.REGISTRY }}/${{ github.repository_owner }}/charts/${{ env.CHART_NAME }} --version ${VERSION}" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
