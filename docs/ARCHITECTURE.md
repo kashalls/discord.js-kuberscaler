@@ -10,9 +10,9 @@ The Discord Gateway Sharding Operator is a Kubernetes controller that automates 
 
 ### 1. Custom Resource Definition (CRD)
 
-**File**: `api/v1alpha1/discordgateway_types.go`
+**File**: `api/v1alpha1/discordsharder_types.go`
 
-The `DiscordGateway` CRD defines:
+The `DiscordSharder` CRD defines:
 - **Spec**: User-provided configuration (image, sharding mode, resources, etc.)
 - **Status**: Operator-managed state (recommended shards, applied shards, conditions)
 
@@ -24,11 +24,11 @@ Key design decisions:
 
 ### 2. Controller
 
-**File**: `internal/controller/discordgateway_controller.go`
+**File**: `internal/controller/discordsharder_controller.go`
 
 The reconciliation loop:
 
-1. **Fetch DiscordGateway resource**
+1. **Fetch DiscordSharder resource**
 2. **Get bot token** from referenced Secret
 3. **Query Discord API** for recommended shard count
 4. **Calculate desired shards** based on mode and constraints
@@ -77,7 +77,7 @@ Pod management:
 
 ```
 ┌─────────────────┐
-│ DiscordGateway  │ (User creates CR)
+│ DiscordSharder  │ (User creates CR)
 └────────┬────────┘
          │
          ▼
@@ -160,7 +160,7 @@ The pod ordinal is projected into the `SHARDS` environment variable via the down
 
 The operator requires:
 
-- **DiscordGateway**: Full CRUD + status updates
+- **DiscordSharder**: Full CRUD + status updates
 - **StatefulSet**: Full CRUD (for managing shard pods)
 - **Secret**: Read-only (for bot token)
 
@@ -170,7 +170,7 @@ No cluster-admin required.
 
 Design features for GitOps:
 
-1. **Owner references**: StatefulSets owned by DiscordGateway
+1. **Owner references**: StatefulSets owned by DiscordSharder
 2. **Status subresource**: Status updates don't trigger reconciliation
 3. **Declarative spec**: All config in CR, no imperative operations
 4. **Idempotent reconciliation**: Same input always produces same output
@@ -267,19 +267,19 @@ Works with:
 ## Performance Characteristics
 
 - **Reconciliation overhead**: Minimal (one API call per 10 minutes)
-- **Memory usage**: O(1) per DiscordGateway resource
+- **Memory usage**: O(1) per DiscordSharder resource
 - **API calls**: 1 per reconciliation per resource
 - **Kubernetes API calls**: O(1) per reconciliation
 
 Recommended limits:
-- ~100 DiscordGateway resources per operator instance
+- ~100 DiscordSharder resources per operator instance
 - Scales horizontally with leader election
 
 ## Future Enhancements
 
 Possible improvements:
 
-1. **Custom sync intervals** per DiscordGateway
+1. **Custom sync intervals** per DiscordSharder
 2. **Shard affinity** (pin shards to nodes)
 3. **Custom intents calculation** (bitmask generation)
 4. **Metrics export** (Prometheus)

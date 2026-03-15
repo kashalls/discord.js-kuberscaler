@@ -1,10 +1,10 @@
 apiVersion: discord.ok8.sh/v1alpha1
-kind: DiscordGateway
+kind: DiscordSharder
 metadata:
   labels:
     app.kubernetes.io/name: discord-kuberscaler
     app.kubernetes.io/managed-by: kustomize
-  name: discordgateway-sample
+  name: discordsharder-sample
 spec:
   # tokenSecretRef is used ONLY by the operator to call Discord's /gateway/bot
   # API. It is not injected into pods automatically — add DISCORD_TOKEN to your
@@ -20,7 +20,7 @@ spec:
 
   # Full pod template — you control everything here.
   # The operator injects three env vars into every container if not already set:
-  #   DISCORD_SHARD_ID        – metadata.name of the pod, e.g. "discordgateway-sample-3"
+  #   DISCORD_SHARD_ID        – metadata.name of the pod, e.g. "discordsharder-sample-3"
   #   DISCORD_SHARD_COUNT     – total number of shards (from Discord API / fixed count)
   #   DISCORD_MAX_CONCURRENCY – Discord session-start concurrency limit
   template:

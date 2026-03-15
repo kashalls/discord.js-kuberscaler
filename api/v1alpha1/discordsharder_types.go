@@ -21,17 +21,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// ShardingMode defines the mode for determining shard count.
-// +kubebuilder:validation:Enum=Recommended;Fixed
-type ShardingMode string
-
-const (
-	// ShardingModeRecommended uses Discord's recommended shard count
-	ShardingModeRecommended ShardingMode = "Recommended"
-	// ShardingModeFixed uses a fixed shard count
-	ShardingModeFixed ShardingMode = "Fixed"
-)
-
 // UpdateStrategy controls how shard count changes are rolled out.
 // +kubebuilder:validation:Enum=RollingUpdate;BlueGreen
 type UpdateStrategy string
@@ -57,7 +46,7 @@ const (
 	ChangeStrategyImmediate ChangeStrategy = "Immediate"
 	// ChangeStrategyOnAnnotation defers shard count changes until the operator
 	// sees the annotation discord.ok8.sh/allow-reshard: "true" on the
-	// DiscordGateway resource. The annotation is removed automatically once the
+	// DiscordSharder resource. The annotation is removed automatically once the
 	// change has been initiated, so it acts as a one-shot gate.
 	ChangeStrategyOnAnnotation ChangeStrategy = "OnAnnotation"
 )
@@ -72,11 +61,11 @@ type SecretReference struct {
 
 // ShardingConfig defines the sharding configuration.
 type ShardingConfig struct {
-	// Mode determines how shard count is calculated (Recommended or Fixed)
-	// +kubebuilder:default=Recommended
-	Mode ShardingMode `json:"mode,omitempty"`
-	// FixedShardCount is the number of shards when mode is Fixed
+	// FixedShardCount pins the shard count to an exact value. When set, Discord's
+	// recommended count is ignored. When unset, the operator uses Discord's
+	// recommendation, adjusted by StepSize, MinShards, and MaxShards.
 	// +optional
+	// +kubebuilder:validation:Minimum=1
 	FixedShardCount *int32 `json:"fixedShardCount,omitempty"`
 	// MinShards is the minimum number of shards (used with Recommended mode)
 	// +optional
@@ -105,10 +94,10 @@ type ShardingConfig struct {
 	ChangeStrategy ChangeStrategy `json:"changeStrategy,omitempty"`
 }
 
-// DiscordGatewaySpec defines the desired state of DiscordGateway.
-type DiscordGatewaySpec struct {
+// DiscordSharderSpec defines the desired state of DiscordSharder.
+type DiscordSharderSpec struct {
 	// SyncInterval controls how often the operator polls the Discord API for
-	// the recommended shard count. Defaults to 10 minutes if unset.
+	// the recommended shard count. Defaults to 12 hours if unset.
 	// +optional
 	SyncInterval *metav1.Duration `json:"syncInterval,omitempty"`
 	// TokenSecretRef references the Secret containing the bot token. The operator
@@ -134,8 +123,8 @@ type DiscordGatewaySpec struct {
 	Template corev1.PodTemplateSpec `json:"template"`
 }
 
-// DiscordGatewayStatus defines the observed state of DiscordGateway.
-type DiscordGatewayStatus struct {
+// DiscordSharderStatus defines the observed state of DiscordSharder.
+type DiscordSharderStatus struct {
 	// RecommendedShards is the shard count recommended by Discord
 	// +optional
 	RecommendedShards int32 `json:"recommendedShards,omitempty"`
@@ -148,14 +137,16 @@ type DiscordGatewayStatus struct {
 	// LastSyncTime is the last time the operator synced with Discord API
 	// +optional
 	LastSyncTime *metav1.Time `json:"lastSyncTime,omitempty"`
-	// Conditions represent the latest available observations of the DiscordGateway's state
+	// Conditions represent the latest available observations of the DiscordSharder's state
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
-	// ActiveStatefulSet is the name of the currently serving StatefulSet.
-	// Only set when UpdateStrategy is BlueGreen; empty means the default name
-	// (same as the DiscordGateway) is active.
+	// ActiveRevision is a monotonically increasing counter used to derive the
+	// name of the currently active StatefulSet during blue-green transitions.
+	// Revision 0 uses the gateway name with no suffix (backward-compatible with
+	// pre-existing StatefulSets). Each promotion increments this by one, so
+	// successive StatefulSet names are <name>, <name>-1, <name>-2, …
 	// +optional
-	ActiveStatefulSet string `json:"activeStatefulSet,omitempty"`
+	ActiveRevision int64 `json:"activeRevision,omitempty"`
 	// PendingShards is the desired shard count that has not yet been applied.
 	// Non-zero when a change is held by ChangeStrategy=OnAnnotation, or while a
 	// BlueGreen transition is in progress.
@@ -165,30 +156,29 @@ type DiscordGatewayStatus struct {
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
-// +kubebuilder:printcolumn:name="Mode",type=string,JSONPath=`.spec.sharding.mode`
 // +kubebuilder:printcolumn:name="Applied Shards",type=integer,JSONPath=`.status.appliedShards`
 // +kubebuilder:printcolumn:name="Recommended",type=integer,JSONPath=`.status.recommendedShards`
 // +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].status`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
-// DiscordGateway is the Schema for the discordgateways API.
-type DiscordGateway struct {
+// DiscordSharder is the Schema for the discordsharders API.
+type DiscordSharder struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
 
-	Spec   DiscordGatewaySpec   `json:"spec,omitempty"`
-	Status DiscordGatewayStatus `json:"status,omitempty"`
+	Spec   DiscordSharderSpec   `json:"spec,omitempty"`
+	Status DiscordSharderStatus `json:"status,omitempty"`
 }
 
 // +kubebuilder:object:root=true
 
-// DiscordGatewayList contains a list of DiscordGateway.
-type DiscordGatewayList struct {
+// DiscordSharderList contains a list of DiscordSharder.
+type DiscordSharderList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata,omitempty"`
-	Items           []DiscordGateway `json:"items"`
+	Items           []DiscordSharder `json:"items"`
 }
 
 func init() {
-	SchemeBuilder.Register(&DiscordGateway{}, &DiscordGatewayList{})
+	SchemeBuilder.Register(&DiscordSharder{}, &DiscordSharderList{})
 }

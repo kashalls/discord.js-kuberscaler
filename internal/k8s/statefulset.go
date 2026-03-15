@@ -32,7 +32,7 @@ import (
 // template labels so the selector always matches.
 func operatorLabels(gatewayName string) map[string]string {
 	return map[string]string{
-		"app.kubernetes.io/managed-by": "discord-gateway-operator",
+		"app.kubernetes.io/managed-by": "discord-sharder-operator",
 		"discord.ok8.sh/gateway":       gatewayName,
 	}
 }
@@ -55,7 +55,7 @@ func operatorLabels(gatewayName string) map[string]string {
 //     discord.js v14 reads this directly via process.env.SHARD_COUNT.
 //
 // No init containers, volumes, or other mutations are added to the user's template.
-func BuildStatefulSet(gateway *discordv1alpha1.DiscordGateway, name string, replicas int32) *appsv1.StatefulSet {
+func BuildStatefulSet(gateway *discordv1alpha1.DiscordSharder, name string, replicas int32) *appsv1.StatefulSet {
 	sel := operatorLabels(gateway.Name)
 
 	// Deep-copy the user's pod template so we don't mutate the in-memory CR.
@@ -120,7 +120,7 @@ func BuildStatefulSet(gateway *discordv1alpha1.DiscordGateway, name string, repl
 // BuildHeadlessService creates the headless Service required by the StatefulSet.
 // StatefulSets use the headless Service to give each pod a stable DNS name of
 // the form <pod>.<service>.<namespace>.svc.cluster.local.
-func BuildHeadlessService(gateway *discordv1alpha1.DiscordGateway) *corev1.Service {
+func BuildHeadlessService(gateway *discordv1alpha1.DiscordSharder) *corev1.Service {
 	sel := operatorLabels(gateway.Name)
 
 	return &corev1.Service{

@@ -4,14 +4,14 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.16.4
-  name: discordgateways.discord.ok8.sh
+  name: discordsharders.discord.ok8.sh
 spec:
   group: discord.ok8.sh
   names:
-    kind: DiscordGateway
-    listKind: DiscordGatewayList
-    plural: discordgateways
-    singular: discordgateway
+    kind: DiscordSharder
+    listKind: DiscordSharderList
+    plural: discordsharders
+    singular: discordsharder
   scope: Namespaced
   versions:
   - additionalPrinterColumns:
@@ -33,7 +33,7 @@ spec:
     name: v1alpha1
     schema:
       openAPIV3Schema:
-        description: DiscordGateway is the Schema for the discordgateways API.
+        description: DiscordSharder is the Schema for the discordsharders API.
         properties:
           apiVersion:
             description: |-
@@ -53,7 +53,7 @@ spec:
           metadata:
             type: object
           spec:
-            description: DiscordGatewaySpec defines the desired state of DiscordGateway.
+            description: DiscordSharderSpec defines the desired state of DiscordSharder.
             properties:
               sharding:
                 description: Sharding defines how the shard count is determined.
@@ -8013,7 +8013,7 @@ spec:
             - tokenSecretRef
             type: object
           status:
-            description: DiscordGatewayStatus defines the observed state of DiscordGateway.
+            description: DiscordSharderStatus defines the observed state of DiscordSharder.
             properties:
               appliedShards:
                 description: AppliedShards is the actual number of shards currently
@@ -8022,7 +8022,7 @@ spec:
                 type: integer
               conditions:
                 description: Conditions represent the latest available observations
-                  of the DiscordGateway's state
+                  of the DiscordSharder's state
                 items:
                   description: Condition contains details for one aspect of the current
                     state of this API Resource.

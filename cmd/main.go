@@ -145,12 +145,12 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err = (&controller.DiscordGatewayReconciler{
+	if err = (&controller.DiscordSharderReconciler{
 		Client:        mgr.GetClient(),
 		Scheme:        mgr.GetScheme(),
 		DiscordClient: discord.NewClient(),
 	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "DiscordGateway")
+		setupLog.Error(err, "unable to create controller", "controller", "DiscordSharder")
 		os.Exit(1)
 	}
 	// +kubebuilder:scaffold:builder

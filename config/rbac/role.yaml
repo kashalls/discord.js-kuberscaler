@@ -39,7 +39,7 @@ rules:
 - apiGroups:
   - discord.ok8.sh
   resources:
-  - discordgateways
+  - discordsharders
   verbs:
   - create
   - delete
@@ -51,13 +51,13 @@ rules:
 - apiGroups:
   - discord.ok8.sh
   resources:
-  - discordgateways/finalizers
+  - discordsharders/finalizers
   verbs:
   - update
 - apiGroups:
   - discord.ok8.sh
   resources:
-  - discordgateways/status
+  - discordsharders/status
   verbs:
   - get
   - patch

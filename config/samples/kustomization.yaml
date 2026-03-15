@@ -1,4 +1,4 @@
 ## Append samples of your project ##
 resources:
-- discord_v1alpha1_discordgateway.yaml
+- discord_v1alpha1_discordsharder.yaml
 # +kubebuilder:scaffold:manifestskustomizesamples

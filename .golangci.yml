@@ -32,7 +32,7 @@ issues:
       text: "could not import k8s.io/apimachinery/pkg/types"
     - linters:
         - typecheck
-      text: "undefined.*type.*DiscordGatewayReconciler"
+      text: "undefined.*type.*DiscordSharderReconciler"
 linters:
   disable-all: true
   enable:

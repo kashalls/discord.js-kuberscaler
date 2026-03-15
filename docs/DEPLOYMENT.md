@@ -12,13 +12,13 @@ This guide walks you through deploying the Discord Gateway Sharding Operator.
 ## Step 1: Install CRDs
 
 ```bash
-kubectl apply -f config/crd/bases/discord.ok8.sh_discordgateways.yaml
+kubectl apply -f config/crd/bases/discord.ok8.sh_discordsharders.yaml
 ```
 
 Verify the CRD is installed:
 
 ```bash
-kubectl get crd discordgateways.discord.ok8.sh
+kubectl get crd discordsharders.discord.ok8.sh
 ```
 
 ## Step 2: Create Namespace (Optional)
@@ -64,22 +64,22 @@ kubectl create secret generic discord-bot-token \
   -n discord-bots
 ```
 
-## Step 5: Deploy a DiscordGateway Resource
+## Step 5: Deploy a DiscordSharder Resource
 
-See `config/samples/discord_v1alpha1_discordgateway.yaml` for an example.
+See `config/samples/discord_v1alpha1_discordsharder.yaml` for an example.
 
 Apply it:
 
 ```bash
-kubectl apply -f config/samples/discord_v1alpha1_discordgateway.yaml
+kubectl apply -f config/samples/discord_v1alpha1_discordsharder.yaml
 ```
 
 ## Step 6: Verify Deployment
 
-Check the DiscordGateway status:
+Check the DiscordSharder status:
 
 ```bash
-kubectl get discordgateway -o wide
+kubectl get discordsharder -o wide
 ```
 
 Check the created StatefulSet and pods:

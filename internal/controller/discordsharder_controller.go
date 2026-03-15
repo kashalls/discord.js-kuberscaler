@@ -61,41 +61,37 @@ const (
 	// allowReshardAnnotation is checked when ChangeStrategy=OnAnnotation.
 	allowReshardAnnotation = "discord.ok8.sh/allow-reshard"
 
-	// pendingSTSSuffix is appended to the gateway name to form the pending
-	// StatefulSet name during a blue-green transition.
-	pendingSTSSuffix = "-next"
-
 	// defaultSyncInterval is used when spec.syncInterval is not set.
 	defaultSyncInterval = 12 * time.Hour
 )
 
-// DiscordGatewayReconciler reconciles a DiscordGateway object
-type DiscordGatewayReconciler struct {
+// DiscordSharderReconciler reconciles a DiscordSharder object
+type DiscordSharderReconciler struct {
 	client.Client
 	Scheme        *runtime.Scheme
 	DiscordClient discord.GatewayClient
 }
 
-// +kubebuilder:rbac:groups=discord.ok8.sh,resources=discordgateways,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=discord.ok8.sh,resources=discordgateways/status,verbs=get;update;patch
-// +kubebuilder:rbac:groups=discord.ok8.sh,resources=discordgateways/finalizers,verbs=update
+// +kubebuilder:rbac:groups=discord.ok8.sh,resources=discordsharders,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=discord.ok8.sh,resources=discordsharders/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=discord.ok8.sh,resources=discordsharders/finalizers,verbs=update
 // +kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=core,resources=services,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=core,resources=secrets,verbs=get;list;watch
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
-func (r *DiscordGatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+func (r *DiscordSharderReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 
-	// Fetch the DiscordGateway instance
-	gateway := &discordv1alpha1.DiscordGateway{}
+	// Fetch the DiscordSharder instance
+	gateway := &discordv1alpha1.DiscordSharder{}
 	if err := r.Get(ctx, req.NamespacedName, gateway); err != nil {
 		if apierrors.IsNotFound(err) {
-			logger.Info("DiscordGateway resource not found, ignoring")
+			logger.Info("DiscordSharder resource not found, ignoring")
 			return ctrl.Result{}, nil
 		}
-		logger.Error(err, "Failed to get DiscordGateway")
+		logger.Error(err, "Failed to get DiscordSharder")
 		return ctrl.Result{}, err
 	}
 
@@ -284,7 +280,7 @@ func (r *DiscordGatewayReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 			Type:    ConditionTypeReady,
 			Status:  metav1.ConditionTrue,
 			Reason:  ReasonAvailable,
-			Message: "DiscordGateway is ready",
+			Message: "DiscordSharder is ready",
 		})
 	}
 	meta.RemoveStatusCondition(&gateway.Status.Conditions, ConditionTypeDegraded)
@@ -294,7 +290,7 @@ func (r *DiscordGatewayReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		return ctrl.Result{}, err
 	}
 
-	logger.Info("Successfully reconciled DiscordGateway",
+	logger.Info("Successfully reconciled DiscordSharder",
 		"recommendedShards", gateway.Status.RecommendedShards,
 		"appliedShards", gateway.Status.AppliedShards,
 		"pendingShards", gateway.Status.PendingShards,
@@ -304,7 +300,7 @@ func (r *DiscordGatewayReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 }
 
 // getToken retrieves the Discord bot token from the referenced Secret.
-func (r *DiscordGatewayReconciler) getToken(ctx context.Context, gateway *discordv1alpha1.DiscordGateway) (string, error) {
+func (r *DiscordSharderReconciler) getToken(ctx context.Context, gateway *discordv1alpha1.DiscordSharder) (string, error) {
 	secret := &corev1.Secret{}
 	secretKey := types.NamespacedName{
 		Name:      gateway.Spec.TokenSecretRef.Name,
@@ -323,38 +319,28 @@ func (r *DiscordGatewayReconciler) getToken(ctx context.Context, gateway *discor
 	return string(tokenBytes), nil
 }
 
-// calculateDesiredShards determines the desired shard count based on the
-// sharding mode, step-rounding, and min/max constraints.
-func (r *DiscordGatewayReconciler) calculateDesiredShards(gateway *discordv1alpha1.DiscordGateway, recommendedShards int32) int32 {
-	mode := gateway.Spec.Sharding.Mode
-	if mode == "" {
-		mode = discordv1alpha1.ShardingModeRecommended
+// calculateDesiredShards determines the desired shard count.
+// If fixedShardCount is set it is returned directly. Otherwise Discord's
+// recommendation is step-rounded and clamped by minShards / maxShards.
+func (r *DiscordSharderReconciler) calculateDesiredShards(gateway *discordv1alpha1.DiscordSharder, recommendedShards int32) int32 {
+	if gateway.Spec.Sharding.FixedShardCount != nil {
+		return *gateway.Spec.Sharding.FixedShardCount
 	}
 
-	if mode == discordv1alpha1.ShardingModeFixed {
-		if gateway.Spec.Sharding.FixedShardCount != nil {
-			return *gateway.Spec.Sharding.FixedShardCount
-		}
-		return 1
-	}
-
-	// Recommended mode: start from Discord's recommendation.
+	// Recommended path: start from Discord's suggestion.
 	desired := recommendedShards
 
 	// Apply step-size rounding before min/max so that constraints are evaluated
-	// against the already-rounded value (e.g. step=4, min=4 won't push a
-	// recommendation of 1 to 4 and then clip back to 4).
+	// against the already-rounded value.
 	if gateway.Spec.Sharding.StepSize != nil && *gateway.Spec.Sharding.StepSize > 1 {
 		step := *gateway.Spec.Sharding.StepSize
 		desired = ((desired + step - 1) / step) * step
 	}
 
-	// Apply min constraint
 	if gateway.Spec.Sharding.MinShards != nil && desired < *gateway.Spec.Sharding.MinShards {
 		desired = *gateway.Spec.Sharding.MinShards
 	}
 
-	// Apply max constraint
 	if gateway.Spec.Sharding.MaxShards != nil && desired > *gateway.Spec.Sharding.MaxShards {
 		desired = *gateway.Spec.Sharding.MaxShards
 	}
@@ -362,11 +348,11 @@ func (r *DiscordGatewayReconciler) calculateDesiredShards(gateway *discordv1alph
 	return desired
 }
 
-// reconcileService ensures the headless Service owned by this DiscordGateway exists.
+// reconcileService ensures the headless Service owned by this DiscordSharder exists.
 // The Service is only created, never updated — its spec.clusterIP is immutable and
 // there are no other mutable fields of interest. If the Service is deleted, the
 // owner-reference watch will trigger a reconcile that recreates it.
-func (r *DiscordGatewayReconciler) reconcileService(ctx context.Context, gateway *discordv1alpha1.DiscordGateway) error {
+func (r *DiscordSharderReconciler) reconcileService(ctx context.Context, gateway *discordv1alpha1.DiscordSharder) error {
 	logger := log.FromContext(ctx)
 
 	desired := k8s.BuildHeadlessService(gateway)
@@ -388,7 +374,7 @@ func (r *DiscordGatewayReconciler) reconcileService(ctx context.Context, gateway
 
 // reconcileStatefulSet creates or updates the StatefulSet for the gateway
 // using the default RollingUpdate strategy.
-func (r *DiscordGatewayReconciler) reconcileStatefulSet(ctx context.Context, gateway *discordv1alpha1.DiscordGateway, replicas int32) error {
+func (r *DiscordSharderReconciler) reconcileStatefulSet(ctx context.Context, gateway *discordv1alpha1.DiscordSharder, replicas int32) error {
 	return r.ensureStatefulSet(ctx, gateway, gateway.Name, replicas)
 }
 
@@ -402,11 +388,11 @@ func (r *DiscordGatewayReconciler) reconcileStatefulSet(ctx context.Context, gat
 //  1. No change needed → sync the active StatefulSet in place (no-op if count matches).
 //  2. Change needed, no transition in flight → create the pending StatefulSet.
 //  3. Transition in flight → poll pending readiness; promote when Ready.
-func (r *DiscordGatewayReconciler) reconcileStatefulSetBlueGreen(ctx context.Context, gateway *discordv1alpha1.DiscordGateway, desiredShards int32) error {
+func (r *DiscordSharderReconciler) reconcileStatefulSetBlueGreen(ctx context.Context, gateway *discordv1alpha1.DiscordSharder, desiredShards int32) error {
 	logger := log.FromContext(ctx)
 
-	activeName := r.activeSTSName(gateway)
-	pendingName := r.pendingSTSName(gateway)
+	activeName := activeSTSName(gateway)
+	pendingName := pendingSTSName(gateway)
 
 	// Case 1: no change needed — keep the active StatefulSet in sync.
 	if gateway.Status.PendingShards == 0 && gateway.Status.AppliedShards == desiredShards {
@@ -442,8 +428,9 @@ func (r *DiscordGatewayReconciler) reconcileStatefulSetBlueGreen(ctx context.Con
 				}
 			}
 
-			// Promote: the pending name becomes the new active.
-			gateway.Status.ActiveStatefulSet = pendingName
+			// Promote: increment the revision so activeSTSName now returns
+			// the promoted StatefulSet's name.
+			gateway.Status.ActiveRevision++
 			gateway.Status.AppliedShards = pending
 			gateway.Status.PendingShards = 0
 			return nil
@@ -472,7 +459,7 @@ func (r *DiscordGatewayReconciler) reconcileStatefulSetBlueGreen(ctx context.Con
 // ensureStatefulSet creates or updates a StatefulSet with the given name and
 // replica count. It is the shared implementation for both RollingUpdate and
 // BlueGreen reconcile paths.
-func (r *DiscordGatewayReconciler) ensureStatefulSet(ctx context.Context, gateway *discordv1alpha1.DiscordGateway, name string, replicas int32) error {
+func (r *DiscordSharderReconciler) ensureStatefulSet(ctx context.Context, gateway *discordv1alpha1.DiscordSharder, name string, replicas int32) error {
 	logger := log.FromContext(ctx)
 
 	desiredSts := k8s.BuildStatefulSet(gateway, name, replicas)
@@ -511,31 +498,28 @@ func (r *DiscordGatewayReconciler) ensureStatefulSet(ctx context.Context, gatewa
 }
 
 // activeSTSName returns the name of the currently active StatefulSet.
-// When no blue-green transition has ever happened the name is just the gateway
-// name (backward-compatible with pre-existing StatefulSets).
-func (r *DiscordGatewayReconciler) activeSTSName(gateway *discordv1alpha1.DiscordGateway) string {
-	if gateway.Status.ActiveStatefulSet != "" {
-		return gateway.Status.ActiveStatefulSet
+// Revision 0 returns the bare gateway name (backward-compatible with
+// StatefulSets created before blue-green support was added).
+func activeSTSName(gateway *discordv1alpha1.DiscordSharder) string {
+	if gateway.Status.ActiveRevision == 0 {
+		return gateway.Name
 	}
-	return gateway.Name
+	return fmt.Sprintf("%s-%d", gateway.Name, gateway.Status.ActiveRevision)
 }
 
-// pendingSTSName returns the name to use for the pending (new) StatefulSet
-// during a blue-green transition. It alternates between two names so that
-// resources are reused across successive transitions.
-func (r *DiscordGatewayReconciler) pendingSTSName(gateway *discordv1alpha1.DiscordGateway) string {
-	if r.activeSTSName(gateway) == gateway.Name {
-		return gateway.Name + pendingSTSSuffix
-	}
-	return gateway.Name
+// pendingSTSName returns the name for the next (incoming) StatefulSet during a
+// blue-green transition. It is always ActiveRevision+1, so successive names are
+// <name>, <name>-1, <name>-2, … and at most two StatefulSets exist at once.
+func pendingSTSName(gateway *discordv1alpha1.DiscordSharder) string {
+	return fmt.Sprintf("%s-%d", gateway.Name, gateway.Status.ActiveRevision+1)
 }
 
 // SetupWithManager sets up the controller with the Manager.
-func (r *DiscordGatewayReconciler) SetupWithManager(mgr ctrl.Manager) error {
+func (r *DiscordSharderReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&discordv1alpha1.DiscordGateway{}).
+		For(&discordv1alpha1.DiscordSharder{}).
 		Owns(&appsv1.StatefulSet{}).
 		Owns(&corev1.Service{}).
-		Named("discordgateway").
+		Named("discordsharder").
 		Complete(r)
 }
