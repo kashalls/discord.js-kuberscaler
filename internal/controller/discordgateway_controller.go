@@ -43,6 +43,8 @@ const (
 	ConditionTypeReady = "Ready"
 	// ConditionTypeDegraded represents the Degraded condition
 	ConditionTypeDegraded = "Degraded"
+	// ConditionTypePendingReshard indicates a shard count change is waiting to be applied.
+	ConditionTypePendingReshard = "PendingReshard"
 	// ReasonReconciling indicates the resource is being reconciled
 	ReasonReconciling = "Reconciling"
 	// ReasonAvailable indicates the resource is available
@@ -51,9 +53,20 @@ const (
 	ReasonFailed = "Failed"
 	// ReasonDiscordAPIError indicates an error calling Discord API
 	ReasonDiscordAPIError = "DiscordAPIError"
+	// ReasonWaitingForAnnotation indicates ChangeStrategy=OnAnnotation is blocking a reshard
+	ReasonWaitingForAnnotation = "WaitingForAnnotation"
+	// ReasonBlueGreenInProgress indicates a blue-green rollout is underway
+	ReasonBlueGreenInProgress = "BlueGreenInProgress"
 
-	// Default requeue interval
-	requeueInterval = 10 * time.Minute
+	// allowReshardAnnotation is checked when ChangeStrategy=OnAnnotation.
+	allowReshardAnnotation = "discord.ok8.sh/allow-reshard"
+
+	// pendingSTSSuffix is appended to the gateway name to form the pending
+	// StatefulSet name during a blue-green transition.
+	pendingSTSSuffix = "-next"
+
+	// defaultSyncInterval is used when spec.syncInterval is not set.
+	defaultSyncInterval = 12 * time.Hour
 )
 
 // DiscordGatewayReconciler reconciles a DiscordGateway object
@@ -84,6 +97,11 @@ func (r *DiscordGatewayReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		}
 		logger.Error(err, "Failed to get DiscordGateway")
 		return ctrl.Result{}, err
+	}
+
+	interval := defaultSyncInterval
+	if gateway.Spec.SyncInterval != nil && gateway.Spec.SyncInterval.Duration > 0 {
+		interval = gateway.Spec.SyncInterval.Duration
 	}
 
 	// Validate sharding constraints before doing any external calls.
@@ -125,7 +143,7 @@ func (r *DiscordGatewayReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		if statusErr := r.Status().Update(ctx, gateway); statusErr != nil {
 			logger.Error(statusErr, "Failed to update status")
 		}
-		return ctrl.Result{RequeueAfter: requeueInterval}, err
+		return ctrl.Result{RequeueAfter: interval}, err
 	}
 
 	// Fetch recommended shard count from Discord
@@ -147,7 +165,7 @@ func (r *DiscordGatewayReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		if statusErr := r.Status().Update(ctx, gateway); statusErr != nil {
 			logger.Error(statusErr, "Failed to update status")
 		}
-		return ctrl.Result{RequeueAfter: requeueInterval}, err
+		return ctrl.Result{RequeueAfter: interval}, err
 	}
 
 	// Update status with Discord info
@@ -156,8 +174,51 @@ func (r *DiscordGatewayReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	gateway.Status.MaxConcurrency = int32(gatewayInfo.SessionStartLimit.MaxConcurrency)
 	gateway.Status.LastSyncTime = &now
 
-	// Calculate desired shard count
+	// Calculate desired shard count (applies mode, step-rounding, and min/max).
 	desiredShards := r.calculateDesiredShards(gateway, int32(gatewayInfo.Shards))
+
+	// ChangeStrategy=OnAnnotation: hold the change until the user annotates.
+	changeStrategy := gateway.Spec.Sharding.ChangeStrategy
+	if changeStrategy == "" {
+		changeStrategy = discordv1alpha1.ChangeStrategyImmediate
+	}
+	if changeStrategy == discordv1alpha1.ChangeStrategyOnAnnotation &&
+		gateway.Status.AppliedShards != 0 &&
+		desiredShards != gateway.Status.AppliedShards {
+
+		annotations := gateway.GetAnnotations()
+		if annotations == nil || annotations[allowReshardAnnotation] != "true" {
+			// Park the desired count in status so users can see it.
+			gateway.Status.PendingShards = desiredShards
+			meta.SetStatusCondition(&gateway.Status.Conditions, metav1.Condition{
+				Type:   ConditionTypePendingReshard,
+				Status: metav1.ConditionTrue,
+				Reason: ReasonWaitingForAnnotation,
+				Message: fmt.Sprintf(
+					"Shard count change from %d to %d is pending. "+
+						"Add annotation %s: \"true\" to apply.",
+					gateway.Status.AppliedShards, desiredShards, allowReshardAnnotation),
+			})
+			if statusErr := r.Status().Update(ctx, gateway); statusErr != nil {
+				logger.Error(statusErr, "Failed to update status")
+			}
+			return ctrl.Result{RequeueAfter: interval}, nil
+		}
+
+		// Annotation is present — consume it immediately so it acts as a
+		// one-shot gate rather than a permanent override.
+		patch := client.MergeFrom(gateway.DeepCopy())
+		delete(gateway.Annotations, allowReshardAnnotation)
+		if patchErr := r.Patch(ctx, gateway, patch); patchErr != nil {
+			logger.Error(patchErr, "Failed to remove allow-reshard annotation")
+		}
+	}
+
+	// Clear any stale PendingReshard condition/count now that we are applying.
+	if gateway.Status.PendingShards != 0 && desiredShards == gateway.Status.AppliedShards {
+		gateway.Status.PendingShards = 0
+	}
+	meta.RemoveStatusCondition(&gateway.Status.Conditions, ConditionTypePendingReshard)
 
 	// Ensure the headless Service exists before the StatefulSet — the
 	// StatefulSet spec.serviceName must reference an existing Service.
@@ -175,30 +236,57 @@ func (r *DiscordGatewayReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		return ctrl.Result{}, err
 	}
 
-	// Reconcile StatefulSet
-	if err := r.reconcileStatefulSet(ctx, gateway, desiredShards); err != nil {
-		logger.Error(err, "Failed to reconcile StatefulSet")
+	// Reconcile StatefulSet using the configured update strategy.
+	updateStrategy := gateway.Spec.Sharding.UpdateStrategy
+	if updateStrategy == "" {
+		updateStrategy = discordv1alpha1.UpdateStrategyRollingUpdate
+	}
+
+	var reconcileErr error
+	if updateStrategy == discordv1alpha1.UpdateStrategyBlueGreen {
+		reconcileErr = r.reconcileStatefulSetBlueGreen(ctx, gateway, desiredShards)
+	} else {
+		reconcileErr = r.reconcileStatefulSet(ctx, gateway, desiredShards)
+	}
+
+	if reconcileErr != nil {
+		logger.Error(reconcileErr, "Failed to reconcile StatefulSet")
 		meta.SetStatusCondition(&gateway.Status.Conditions, metav1.Condition{
 			Type:    ConditionTypeReady,
 			Status:  metav1.ConditionFalse,
 			Reason:  ReasonFailed,
-			Message: fmt.Sprintf("Failed to reconcile StatefulSet: %v", err),
+			Message: fmt.Sprintf("Failed to reconcile StatefulSet: %v", reconcileErr),
 		})
 		if statusErr := r.Status().Update(ctx, gateway); statusErr != nil {
 			logger.Error(statusErr, "Failed to update status")
 		}
-		return ctrl.Result{}, err
+		return ctrl.Result{}, reconcileErr
 	}
 
-	gateway.Status.AppliedShards = desiredShards
+	// Only mark AppliedShards when a blue-green transition is not in flight.
+	// During blue-green, AppliedShards reflects the active fleet until promotion.
+	if updateStrategy != discordv1alpha1.UpdateStrategyBlueGreen || gateway.Status.PendingShards == 0 {
+		gateway.Status.AppliedShards = desiredShards
+	}
 
-	// Set ready condition
-	meta.SetStatusCondition(&gateway.Status.Conditions, metav1.Condition{
-		Type:    ConditionTypeReady,
-		Status:  metav1.ConditionTrue,
-		Reason:  ReasonAvailable,
-		Message: "DiscordGateway is ready",
-	})
+	// Set ready condition — if a blue-green rollout is underway, reflect that.
+	if gateway.Status.PendingShards != 0 {
+		meta.SetStatusCondition(&gateway.Status.Conditions, metav1.Condition{
+			Type:   ConditionTypeReady,
+			Status: metav1.ConditionTrue,
+			Reason: ReasonBlueGreenInProgress,
+			Message: fmt.Sprintf(
+				"Blue-green rollout in progress: waiting for %d-shard fleet to become Ready.",
+				gateway.Status.PendingShards),
+		})
+	} else {
+		meta.SetStatusCondition(&gateway.Status.Conditions, metav1.Condition{
+			Type:    ConditionTypeReady,
+			Status:  metav1.ConditionTrue,
+			Reason:  ReasonAvailable,
+			Message: "DiscordGateway is ready",
+		})
+	}
 	meta.RemoveStatusCondition(&gateway.Status.Conditions, ConditionTypeDegraded)
 
 	if err := r.Status().Update(ctx, gateway); err != nil {
@@ -209,9 +297,10 @@ func (r *DiscordGatewayReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	logger.Info("Successfully reconciled DiscordGateway",
 		"recommendedShards", gateway.Status.RecommendedShards,
 		"appliedShards", gateway.Status.AppliedShards,
+		"pendingShards", gateway.Status.PendingShards,
 		"maxConcurrency", gateway.Status.MaxConcurrency)
 
-	return ctrl.Result{RequeueAfter: requeueInterval}, nil
+	return ctrl.Result{RequeueAfter: interval}, nil
 }
 
 // getToken retrieves the Discord bot token from the referenced Secret.
@@ -234,7 +323,8 @@ func (r *DiscordGatewayReconciler) getToken(ctx context.Context, gateway *discor
 	return string(tokenBytes), nil
 }
 
-// calculateDesiredShards determines the desired shard count based on the sharding mode.
+// calculateDesiredShards determines the desired shard count based on the
+// sharding mode, step-rounding, and min/max constraints.
 func (r *DiscordGatewayReconciler) calculateDesiredShards(gateway *discordv1alpha1.DiscordGateway, recommendedShards int32) int32 {
 	mode := gateway.Spec.Sharding.Mode
 	if mode == "" {
@@ -248,8 +338,16 @@ func (r *DiscordGatewayReconciler) calculateDesiredShards(gateway *discordv1alph
 		return 1
 	}
 
-	// Recommended mode
+	// Recommended mode: start from Discord's recommendation.
 	desired := recommendedShards
+
+	// Apply step-size rounding before min/max so that constraints are evaluated
+	// against the already-rounded value (e.g. step=4, min=4 won't push a
+	// recommendation of 1 to 4 and then clip back to 4).
+	if gateway.Spec.Sharding.StepSize != nil && *gateway.Spec.Sharding.StepSize > 1 {
+		step := *gateway.Spec.Sharding.StepSize
+		desired = ((desired + step - 1) / step) * step
+	}
 
 	// Apply min constraint
 	if gateway.Spec.Sharding.MinShards != nil && desired < *gateway.Spec.Sharding.MinShards {
@@ -288,26 +386,106 @@ func (r *DiscordGatewayReconciler) reconcileService(ctx context.Context, gateway
 	return err
 }
 
-// reconcileStatefulSet creates or updates the StatefulSet for the gateway.
-// On update, all mutable fields (replicas, pod template, update strategy) are
-// synced to the desired state so that image, resource, and env-var changes are
-// not silently ignored.
+// reconcileStatefulSet creates or updates the StatefulSet for the gateway
+// using the default RollingUpdate strategy.
 func (r *DiscordGatewayReconciler) reconcileStatefulSet(ctx context.Context, gateway *discordv1alpha1.DiscordGateway, replicas int32) error {
+	return r.ensureStatefulSet(ctx, gateway, gateway.Name, replicas)
+}
+
+// reconcileStatefulSetBlueGreen manages a zero-disruption shard count change by
+// running the new fleet alongside the old one until the new fleet is fully Ready,
+// then removing the old fleet.
+//
+// State machine (tracked via gateway.Status.PendingShards and
+// gateway.Status.ActiveStatefulSet):
+//
+//  1. No change needed → sync the active StatefulSet in place (no-op if count matches).
+//  2. Change needed, no transition in flight → create the pending StatefulSet.
+//  3. Transition in flight → poll pending readiness; promote when Ready.
+func (r *DiscordGatewayReconciler) reconcileStatefulSetBlueGreen(ctx context.Context, gateway *discordv1alpha1.DiscordGateway, desiredShards int32) error {
 	logger := log.FromContext(ctx)
 
-	desiredSts := k8s.BuildStatefulSet(gateway, replicas)
+	activeName := r.activeSTSName(gateway)
+	pendingName := r.pendingSTSName(gateway)
 
-	// Set owner reference on the desired object so Kubernetes garbage-collects
-	// the StatefulSet when the DiscordGateway is deleted.
+	// Case 1: no change needed — keep the active StatefulSet in sync.
+	if gateway.Status.PendingShards == 0 && gateway.Status.AppliedShards == desiredShards {
+		return r.ensureStatefulSet(ctx, gateway, activeName, desiredShards)
+	}
+
+	// Case 3: a transition is already in flight — check if the pending fleet is ready.
+	if gateway.Status.PendingShards != 0 {
+		pending := gateway.Status.PendingShards
+
+		pendingSts := &appsv1.StatefulSet{}
+		err := r.Get(ctx, types.NamespacedName{Name: pendingName, Namespace: gateway.Namespace}, pendingSts)
+		if err != nil && apierrors.IsNotFound(err) {
+			// Pending StatefulSet was removed externally; reset and re-evaluate.
+			logger.Info("Pending StatefulSet not found, resetting blue-green state", "name", pendingName)
+			gateway.Status.PendingShards = 0
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("failed to get pending StatefulSet: %w", err)
+		}
+
+		if pendingSts.Status.ReadyReplicas == pending && pendingSts.Status.Replicas == pending {
+			logger.Info("Pending StatefulSet is ready, promoting to active",
+				"pendingName", pendingName, "shards", pending)
+
+			// Delete the old active fleet.
+			activeSts := &appsv1.StatefulSet{}
+			getErr := r.Get(ctx, types.NamespacedName{Name: activeName, Namespace: gateway.Namespace}, activeSts)
+			if getErr == nil {
+				if delErr := r.Delete(ctx, activeSts); delErr != nil && !apierrors.IsNotFound(delErr) {
+					return fmt.Errorf("failed to delete old StatefulSet %q: %w", activeName, delErr)
+				}
+			}
+
+			// Promote: the pending name becomes the new active.
+			gateway.Status.ActiveStatefulSet = pendingName
+			gateway.Status.AppliedShards = pending
+			gateway.Status.PendingShards = 0
+			return nil
+		}
+
+		logger.Info("Waiting for pending StatefulSet to become Ready",
+			"name", pendingName,
+			"readyReplicas", pendingSts.Status.ReadyReplicas,
+			"desired", pending)
+		return nil
+	}
+
+	// Case 2: change needed, no transition in flight — start one.
+	logger.Info("Starting blue-green transition",
+		"activeName", activeName,
+		"pendingName", pendingName,
+		"desiredShards", desiredShards)
+
+	if err := r.ensureStatefulSet(ctx, gateway, pendingName, desiredShards); err != nil {
+		return err
+	}
+	gateway.Status.PendingShards = desiredShards
+	return nil
+}
+
+// ensureStatefulSet creates or updates a StatefulSet with the given name and
+// replica count. It is the shared implementation for both RollingUpdate and
+// BlueGreen reconcile paths.
+func (r *DiscordGatewayReconciler) ensureStatefulSet(ctx context.Context, gateway *discordv1alpha1.DiscordGateway, name string, replicas int32) error {
+	logger := log.FromContext(ctx)
+
+	desiredSts := k8s.BuildStatefulSet(gateway, name, replicas)
+
 	if err := controllerutil.SetControllerReference(gateway, desiredSts, r.Scheme); err != nil {
 		return fmt.Errorf("failed to set owner reference: %w", err)
 	}
 
 	existingSts := &appsv1.StatefulSet{}
-	err := r.Get(ctx, types.NamespacedName{Name: desiredSts.Name, Namespace: desiredSts.Namespace}, existingSts)
+	err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: gateway.Namespace}, existingSts)
 
 	if err != nil && apierrors.IsNotFound(err) {
-		logger.Info("Creating StatefulSet", "name", desiredSts.Name, "replicas", replicas)
+		logger.Info("Creating StatefulSet", "name", name, "replicas", replicas)
 		if createErr := r.Create(ctx, desiredSts); createErr != nil {
 			return fmt.Errorf("failed to create StatefulSet: %w", createErr)
 		}
@@ -316,15 +494,9 @@ func (r *DiscordGatewayReconciler) reconcileStatefulSet(ctx context.Context, gat
 		return fmt.Errorf("failed to get StatefulSet: %w", err)
 	}
 
-	// Determine whether any mutable field has drifted from the desired state.
-	// spec.selector and spec.volumeClaimTemplates are immutable after creation
-	// and must not be touched here.
-	replicasDrifted := existingSts.Spec.Replicas == nil || *existingSts.Spec.Replicas != replicas
-
-	if replicasDrifted {
-		logger.Info("Updating StatefulSet", "name", desiredSts.Name, "replicas", replicas)
-
-		// Sync all mutable fields in one update to avoid partial drifts.
+	// Sync all mutable fields if the replica count has drifted.
+	if existingSts.Spec.Replicas == nil || *existingSts.Spec.Replicas != replicas {
+		logger.Info("Updating StatefulSet", "name", name, "replicas", replicas)
 		existingSts.Labels = desiredSts.Labels
 		existingSts.Spec.Replicas = desiredSts.Spec.Replicas
 		existingSts.Spec.Template = desiredSts.Spec.Template
@@ -336,6 +508,26 @@ func (r *DiscordGatewayReconciler) reconcileStatefulSet(ctx context.Context, gat
 	}
 
 	return nil
+}
+
+// activeSTSName returns the name of the currently active StatefulSet.
+// When no blue-green transition has ever happened the name is just the gateway
+// name (backward-compatible with pre-existing StatefulSets).
+func (r *DiscordGatewayReconciler) activeSTSName(gateway *discordv1alpha1.DiscordGateway) string {
+	if gateway.Status.ActiveStatefulSet != "" {
+		return gateway.Status.ActiveStatefulSet
+	}
+	return gateway.Name
+}
+
+// pendingSTSName returns the name to use for the pending (new) StatefulSet
+// during a blue-green transition. It alternates between two names so that
+// resources are reused across successive transitions.
+func (r *DiscordGatewayReconciler) pendingSTSName(gateway *discordv1alpha1.DiscordGateway) string {
+	if r.activeSTSName(gateway) == gateway.Name {
+		return gateway.Name + pendingSTSSuffix
+	}
+	return gateway.Name
 }
 
 // SetupWithManager sets up the controller with the Manager.

@@ -32,6 +32,36 @@ const (
 	ShardingModeFixed ShardingMode = "Fixed"
 )
 
+// UpdateStrategy controls how shard count changes are rolled out.
+// +kubebuilder:validation:Enum=RollingUpdate;BlueGreen
+type UpdateStrategy string
+
+const (
+	// UpdateStrategyRollingUpdate updates the StatefulSet in-place, causing a
+	// rolling restart of all shard pods whenever the shard count changes.
+	UpdateStrategyRollingUpdate UpdateStrategy = "RollingUpdate"
+	// UpdateStrategyBlueGreen creates a second StatefulSet with the new shard
+	// count, waits for all new pods to be Ready, then removes the old fleet.
+	// Both fleets run concurrently during the transition; applications should
+	// deduplicate events if that is a concern.
+	UpdateStrategyBlueGreen UpdateStrategy = "BlueGreen"
+)
+
+// ChangeStrategy controls when shard count changes are applied.
+// +kubebuilder:validation:Enum=Immediate;OnAnnotation
+type ChangeStrategy string
+
+const (
+	// ChangeStrategyImmediate applies shard count changes as soon as they are
+	// detected. This is the default behaviour.
+	ChangeStrategyImmediate ChangeStrategy = "Immediate"
+	// ChangeStrategyOnAnnotation defers shard count changes until the operator
+	// sees the annotation discord.ok8.sh/allow-reshard: "true" on the
+	// DiscordGateway resource. The annotation is removed automatically once the
+	// change has been initiated, so it acts as a one-shot gate.
+	ChangeStrategyOnAnnotation ChangeStrategy = "OnAnnotation"
+)
+
 // SecretReference contains information about a Secret containing the bot token.
 type SecretReference struct {
 	// Name is the name of the Secret
@@ -56,10 +86,31 @@ type ShardingConfig struct {
 	// +optional
 	// +kubebuilder:validation:Minimum=1
 	MaxShards *int32 `json:"maxShards,omitempty"`
+	// StepSize rounds the desired shard count up to the next multiple of this
+	// value before applying min/max constraints. For example, StepSize=4 keeps
+	// shard counts at 4, 8, 12, … reducing the frequency of full restarts as
+	// Discord's recommendation grows gradually. Powers of two are recommended.
+	// +optional
+	// +kubebuilder:validation:Minimum=1
+	StepSize *int32 `json:"stepSize,omitempty"`
+	// UpdateStrategy controls how a shard count change is rolled out.
+	// Defaults to RollingUpdate.
+	// +optional
+	// +kubebuilder:default=RollingUpdate
+	UpdateStrategy UpdateStrategy `json:"updateStrategy,omitempty"`
+	// ChangeStrategy controls when a detected shard count change is applied.
+	// Defaults to Immediate.
+	// +optional
+	// +kubebuilder:default=Immediate
+	ChangeStrategy ChangeStrategy `json:"changeStrategy,omitempty"`
 }
 
 // DiscordGatewaySpec defines the desired state of DiscordGateway.
 type DiscordGatewaySpec struct {
+	// SyncInterval controls how often the operator polls the Discord API for
+	// the recommended shard count. Defaults to 10 minutes if unset.
+	// +optional
+	SyncInterval *metav1.Duration `json:"syncInterval,omitempty"`
 	// TokenSecretRef references the Secret containing the bot token. The operator
 	// reads this token solely to call Discord's /gateway/bot API to determine the
 	// recommended shard count. It is not automatically injected into pods — add it
@@ -100,6 +151,16 @@ type DiscordGatewayStatus struct {
 	// Conditions represent the latest available observations of the DiscordGateway's state
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
+	// ActiveStatefulSet is the name of the currently serving StatefulSet.
+	// Only set when UpdateStrategy is BlueGreen; empty means the default name
+	// (same as the DiscordGateway) is active.
+	// +optional
+	ActiveStatefulSet string `json:"activeStatefulSet,omitempty"`
+	// PendingShards is the desired shard count that has not yet been applied.
+	// Non-zero when a change is held by ChangeStrategy=OnAnnotation, or while a
+	// BlueGreen transition is in progress.
+	// +optional
+	PendingShards int32 `json:"pendingShards,omitempty"`
 }
 
 // +kubebuilder:object:root=true

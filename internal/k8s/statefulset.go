@@ -39,6 +39,11 @@ func operatorLabels(gatewayName string) map[string]string {
 
 // BuildStatefulSet creates a StatefulSet for the Discord gateway shards.
 //
+// name is the StatefulSet's metadata.name; callers pass gateway.Name for the
+// default case and a suffixed name (e.g. gateway.Name+"-next") for blue-green
+// transitions. The StatefulSet's spec.serviceName always references the
+// headless Service, which is always named gateway.Name.
+//
 // The user's spec.template is used as-is for the pod spec. The operator merges
 // its selector labels into the pod template labels and injects two environment
 // variables into every container (only if the user has not already declared them):
@@ -50,7 +55,7 @@ func operatorLabels(gatewayName string) map[string]string {
 //     discord.js v14 reads this directly via process.env.SHARD_COUNT.
 //
 // No init containers, volumes, or other mutations are added to the user's template.
-func BuildStatefulSet(gateway *discordv1alpha1.DiscordGateway, replicas int32) *appsv1.StatefulSet {
+func BuildStatefulSet(gateway *discordv1alpha1.DiscordGateway, name string, replicas int32) *appsv1.StatefulSet {
 	sel := operatorLabels(gateway.Name)
 
 	// Deep-copy the user's pod template so we don't mutate the in-memory CR.
@@ -86,11 +91,13 @@ func BuildStatefulSet(gateway *discordv1alpha1.DiscordGateway, replicas int32) *
 
 	return &appsv1.StatefulSet{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      gateway.Name,
+			Name:      name,
 			Namespace: gateway.Namespace,
 		},
 		Spec: appsv1.StatefulSetSpec{
-			Replicas:            &replicas,
+			Replicas: &replicas,
+			// serviceName always points to the single headless Service, even
+			// when the StatefulSet itself has a suffixed name (blue-green).
 			ServiceName:         gateway.Name,
 			PodManagementPolicy: appsv1.ParallelPodManagement,
 			Selector: &metav1.LabelSelector{

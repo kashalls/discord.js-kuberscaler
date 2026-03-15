@@ -116,6 +116,60 @@ func TestCalculateDesiredShards(t *testing.T) {
 			recommendedShards: 5,
 			expected:          5,
 		},
+		{
+			name: "Step-size rounds up to next multiple",
+			gateway: &discordv1alpha1.DiscordGateway{
+				Spec: discordv1alpha1.DiscordGatewaySpec{
+					Sharding: discordv1alpha1.ShardingConfig{
+						Mode:     discordv1alpha1.ShardingModeRecommended,
+						StepSize: int32Ptr(4),
+					},
+				},
+			},
+			recommendedShards: 5,
+			expected:          8,
+		},
+		{
+			name: "Step-size is a no-op when already aligned",
+			gateway: &discordv1alpha1.DiscordGateway{
+				Spec: discordv1alpha1.DiscordGatewaySpec{
+					Sharding: discordv1alpha1.ShardingConfig{
+						Mode:     discordv1alpha1.ShardingModeRecommended,
+						StepSize: int32Ptr(4),
+					},
+				},
+			},
+			recommendedShards: 8,
+			expected:          8,
+		},
+		{
+			name: "Step-size of 1 is a no-op",
+			gateway: &discordv1alpha1.DiscordGateway{
+				Spec: discordv1alpha1.DiscordGatewaySpec{
+					Sharding: discordv1alpha1.ShardingConfig{
+						Mode:     discordv1alpha1.ShardingModeRecommended,
+						StepSize: int32Ptr(1),
+					},
+				},
+			},
+			recommendedShards: 7,
+			expected:          7,
+		},
+		{
+			name: "Step-size rounding is applied before max constraint",
+			gateway: &discordv1alpha1.DiscordGateway{
+				Spec: discordv1alpha1.DiscordGatewaySpec{
+					Sharding: discordv1alpha1.ShardingConfig{
+						Mode:      discordv1alpha1.ShardingModeRecommended,
+						StepSize:  int32Ptr(4),
+						MaxShards: int32Ptr(6),
+					},
+				},
+			},
+			recommendedShards: 5,
+			// rounds 5 → 8, then max clips to 6
+			expected: 6,
+		},
 	}
 
 	for _, tt := range tests {
