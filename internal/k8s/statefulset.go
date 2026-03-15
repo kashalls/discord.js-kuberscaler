@@ -33,7 +33,7 @@ import (
 func operatorLabels(gatewayName string) map[string]string {
 	return map[string]string{
 		"app.kubernetes.io/managed-by": "discord-gateway-operator",
-		"discord.ok8.sh/gateway":     gatewayName,
+		"discord.ok8.sh/gateway":       gatewayName,
 	}
 }
 
