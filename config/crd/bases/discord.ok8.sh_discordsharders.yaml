@@ -15,9 +15,6 @@ spec:
   scope: Namespaced
   versions:
   - additionalPrinterColumns:
-    - jsonPath: .spec.sharding.mode
-      name: Mode
-      type: string
     - jsonPath: .status.appliedShards
       name: Applied Shards
       type: integer
@@ -58,10 +55,22 @@ spec:
               sharding:
                 description: Sharding defines how the shard count is determined.
                 properties:
+                  changeStrategy:
+                    default: Immediate
+                    description: |-
+                      ChangeStrategy controls when a detected shard count change is applied.
+                      Defaults to Immediate.
+                    enum:
+                    - Immediate
+                    - OnAnnotation
+                    type: string
                   fixedShardCount:
-                    description: FixedShardCount is the number of shards when mode
-                      is Fixed
+                    description: |-
+                      FixedShardCount pins the shard count to an exact value. When set, Discord's
+                      recommended count is ignored. When unset, the operator uses Discord's
+                      recommendation, adjusted by StepSize, MinShards, and MaxShards.
                     format: int32
+                    minimum: 1
                     type: integer
                   maxShards:
                     description: MaxShards is the maximum number of shards (used with
@@ -75,15 +84,30 @@ spec:
                     format: int32
                     minimum: 1
                     type: integer
-                  mode:
-                    default: Recommended
-                    description: Mode determines how shard count is calculated (Recommended
-                      or Fixed)
+                  stepSize:
+                    description: |-
+                      StepSize rounds the desired shard count up to the next multiple of this
+                      value before applying min/max constraints. For example, StepSize=4 keeps
+                      shard counts at 4, 8, 12, … reducing the frequency of full restarts as
+                      Discord's recommendation grows gradually. Powers of two are recommended.
+                    format: int32
+                    minimum: 1
+                    type: integer
+                  updateStrategy:
+                    default: RollingUpdate
+                    description: |-
+                      UpdateStrategy controls how a shard count change is rolled out.
+                      Defaults to RollingUpdate.
                     enum:
-                    - Recommended
-                    - Fixed
+                    - RollingUpdate
+                    - BlueGreen
                     type: string
                 type: object
+              syncInterval:
+                description: |-
+                  SyncInterval controls how often the operator polls the Discord API for
+                  the recommended shard count. Defaults to 12 hours if unset.
+                type: string
               template:
                 description: |-
                   Template is the pod template used for every shard pod. The operator sets
@@ -8015,6 +8039,15 @@ spec:
           status:
             description: DiscordSharderStatus defines the observed state of DiscordSharder.
             properties:
+              activeRevision:
+                description: |-
+                  ActiveRevision is a monotonically increasing counter used to derive the
+                  name of the currently active StatefulSet during blue-green transitions.
+                  Revision 0 uses the gateway name with no suffix (backward-compatible with
+                  pre-existing StatefulSets). Each promotion increments this by one, so
+                  successive StatefulSet names are <name>, <name>-1, <name>-2, …
+                format: int64
+                type: integer
               appliedShards:
                 description: AppliedShards is the actual number of shards currently
                   deployed
@@ -8085,6 +8118,13 @@ spec:
                 type: string
               maxConcurrency:
                 description: MaxConcurrency is the max_concurrency value from Discord
+                format: int32
+                type: integer
+              pendingShards:
+                description: |-
+                  PendingShards is the desired shard count that has not yet been applied.
+                  Non-zero when a change is held by ChangeStrategy=OnAnnotation, or while a
+                  BlueGreen transition is in progress.
                 format: int32
                 type: integer
               recommendedShards:

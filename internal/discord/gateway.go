@@ -78,11 +78,7 @@ func (c *Client) GetGatewayBot(ctx context.Context, token string) (*GatewayBotRe
 	if err != nil {
 		return nil, fmt.Errorf("failed to execute request: %w", err)
 	}
-	defer func() {
-		if err := resp.Body.Close(); err != nil {
-			// Body close errors are not actionable once the response is read.
-		}
-	}()
+	defer resp.Body.Close() //nolint:errcheck
 
 	if resp.StatusCode == http.StatusTooManyRequests {
 		retryAfter := resp.Header.Get("Retry-After")

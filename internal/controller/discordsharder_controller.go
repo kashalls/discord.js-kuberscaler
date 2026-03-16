@@ -174,40 +174,8 @@ func (r *DiscordSharderReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	desiredShards := r.calculateDesiredShards(gateway, int32(gatewayInfo.Shards))
 
 	// ChangeStrategy=OnAnnotation: hold the change until the user annotates.
-	changeStrategy := gateway.Spec.Sharding.ChangeStrategy
-	if changeStrategy == "" {
-		changeStrategy = discordv1alpha1.ChangeStrategyImmediate
-	}
-	if changeStrategy == discordv1alpha1.ChangeStrategyOnAnnotation &&
-		gateway.Status.AppliedShards != 0 &&
-		desiredShards != gateway.Status.AppliedShards {
-
-		annotations := gateway.GetAnnotations()
-		if annotations == nil || annotations[allowReshardAnnotation] != "true" {
-			// Park the desired count in status so users can see it.
-			gateway.Status.PendingShards = desiredShards
-			meta.SetStatusCondition(&gateway.Status.Conditions, metav1.Condition{
-				Type:   ConditionTypePendingReshard,
-				Status: metav1.ConditionTrue,
-				Reason: ReasonWaitingForAnnotation,
-				Message: fmt.Sprintf(
-					"Shard count change from %d to %d is pending. "+
-						"Add annotation %s: \"true\" to apply.",
-					gateway.Status.AppliedShards, desiredShards, allowReshardAnnotation),
-			})
-			if statusErr := r.Status().Update(ctx, gateway); statusErr != nil {
-				logger.Error(statusErr, "Failed to update status")
-			}
-			return ctrl.Result{RequeueAfter: interval}, nil
-		}
-
-		// Annotation is present — consume it immediately so it acts as a
-		// one-shot gate rather than a permanent override.
-		patch := client.MergeFrom(gateway.DeepCopy())
-		delete(gateway.Annotations, allowReshardAnnotation)
-		if patchErr := r.Patch(ctx, gateway, patch); patchErr != nil {
-			logger.Error(patchErr, "Failed to remove allow-reshard annotation")
-		}
+	if result, done := r.handleAnnotationGate(ctx, gateway, desiredShards, interval); done {
+		return result, nil
 	}
 
 	// Clear any stale PendingReshard condition/count now that we are applying.
@@ -297,6 +265,51 @@ func (r *DiscordSharderReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		"maxConcurrency", gateway.Status.MaxConcurrency)
 
 	return ctrl.Result{RequeueAfter: interval}, nil
+}
+
+// handleAnnotationGate enforces the ChangeStrategy=OnAnnotation gate.
+// It returns (result, done) where done=true means Reconcile should return immediately.
+func (r *DiscordSharderReconciler) handleAnnotationGate(ctx context.Context, gateway *discordv1alpha1.DiscordSharder, desiredShards int32, interval time.Duration) (ctrl.Result, bool) {
+	logger := log.FromContext(ctx)
+
+	changeStrategy := gateway.Spec.Sharding.ChangeStrategy
+	if changeStrategy == "" {
+		changeStrategy = discordv1alpha1.ChangeStrategyImmediate
+	}
+
+	if changeStrategy != discordv1alpha1.ChangeStrategyOnAnnotation ||
+		gateway.Status.AppliedShards == 0 ||
+		desiredShards == gateway.Status.AppliedShards {
+		return ctrl.Result{}, false
+	}
+
+	annotations := gateway.GetAnnotations()
+	if annotations == nil || annotations[allowReshardAnnotation] != "true" {
+		// Park the desired count in status so users can see it.
+		gateway.Status.PendingShards = desiredShards
+		meta.SetStatusCondition(&gateway.Status.Conditions, metav1.Condition{
+			Type:   ConditionTypePendingReshard,
+			Status: metav1.ConditionTrue,
+			Reason: ReasonWaitingForAnnotation,
+			Message: fmt.Sprintf(
+				"Shard count change from %d to %d is pending. "+
+					"Add annotation %s: \"true\" to apply.",
+				gateway.Status.AppliedShards, desiredShards, allowReshardAnnotation),
+		})
+		if statusErr := r.Status().Update(ctx, gateway); statusErr != nil {
+			logger.Error(statusErr, "Failed to update status")
+		}
+		return ctrl.Result{RequeueAfter: interval}, true
+	}
+
+	// Annotation is present — consume it immediately so it acts as a
+	// one-shot gate rather than a permanent override.
+	patch := client.MergeFrom(gateway.DeepCopy())
+	delete(gateway.Annotations, allowReshardAnnotation)
+	if patchErr := r.Patch(ctx, gateway, patch); patchErr != nil {
+		logger.Error(patchErr, "Failed to remove allow-reshard annotation")
+	}
+	return ctrl.Result{}, false
 }
 
 // getToken retrieves the Discord bot token from the referenced Secret.
