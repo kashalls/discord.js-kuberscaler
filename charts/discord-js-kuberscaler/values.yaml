@@ -3,7 +3,7 @@
 replicaCount: 1
 
 image:
-  repository: ghcr.io/waifulabs/discord.js-kuberscaler
+  repository: ghcr.io/kashalls/discord.js-kuberscaler
   pullPolicy: IfNotPresent
   # Overrides the image tag. Defaults to the chart appVersion.
   tag: ""

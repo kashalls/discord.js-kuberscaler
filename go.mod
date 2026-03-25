@@ -1,4 +1,4 @@
-module github.com/waifulabs/discord.js-kuberscaler
+module github.com/kashalls/discord.js-kuberscaler
 
 go 1.22.0
 

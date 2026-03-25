@@ -33,7 +33,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
-	discordv1alpha1 "github.com/waifulabs/discord.js-kuberscaler/api/v1alpha1"
+	discordv1alpha1 "github.com/kashalls/discord.js-kuberscaler/api/v1alpha1"
 	// +kubebuilder:scaffold:imports
 )
 

@@ -35,9 +35,9 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
-	discordv1alpha1 "github.com/waifulabs/discord.js-kuberscaler/api/v1alpha1"
-	"github.com/waifulabs/discord.js-kuberscaler/internal/controller"
-	"github.com/waifulabs/discord.js-kuberscaler/internal/discord"
+	discordv1alpha1 "github.com/kashalls/discord.js-kuberscaler/api/v1alpha1"
+	"github.com/kashalls/discord.js-kuberscaler/internal/controller"
+	"github.com/kashalls/discord.js-kuberscaler/internal/discord"
 	// +kubebuilder:scaffold:imports
 )
 

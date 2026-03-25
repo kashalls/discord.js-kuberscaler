@@ -9,12 +9,12 @@ keywords:
   - sharding
   - operator
   - kubernetes
-home: https://github.com/waifulabs/discord.js-kuberscaler
+home: https://github.com/kashalls/discord.js-kuberscaler
 sources:
-  - https://github.com/waifulabs/discord.js-kuberscaler
+  - https://github.com/kashalls/discord.js-kuberscaler
 maintainers:
-  - name: waifulabs
-    url: https://github.com/waifulabs
+  - name: kashalls
+    url: https://github.com/kashalls
 annotations:
   artifacthub.io/signKey: |
     fingerprint: keyless

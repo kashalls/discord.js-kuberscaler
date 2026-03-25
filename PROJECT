@@ -6,7 +6,7 @@ domain: ok8.sh
 layout:
 - go.kubebuilder.io/v4
 projectName: discord-kuberscaler
-repo: github.com/waifulabs/discord.js-kuberscaler
+repo: github.com/kashalls/discord.js-kuberscaler
 resources:
 - api:
     crdVersion: v1
@@ -15,6 +15,6 @@ resources:
   domain: ok8.sh
   group: discord
   kind: DiscordGateway
-  path: github.com/waifulabs/discord.js-kuberscaler/api/v1alpha1
+  path: github.com/kashalls/discord.js-kuberscaler/api/v1alpha1
   version: v1alpha1
 version: "3"

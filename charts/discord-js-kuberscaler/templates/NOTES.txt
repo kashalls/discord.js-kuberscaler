@@ -37,4 +37,4 @@ The operator will query the Discord Gateway API to determine the recommended sha
 count and create a StatefulSet accordingly. Each pod receives SHARDS and SHARD_COUNT
 environment variables for your bot to consume.
 
-For more details see: https://github.com/waifulabs/discord.js-kuberscaler
+For more details see: https://github.com/kashalls/discord.js-kuberscaler

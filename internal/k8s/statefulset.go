@@ -24,7 +24,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 
-	discordv1alpha1 "github.com/waifulabs/discord.js-kuberscaler/api/v1alpha1"
+	discordv1alpha1 "github.com/kashalls/discord.js-kuberscaler/api/v1alpha1"
 )
 
 // operatorLabels returns the stable labels the operator uses for the StatefulSet

@@ -33,9 +33,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
-	discordv1alpha1 "github.com/waifulabs/discord.js-kuberscaler/api/v1alpha1"
-	"github.com/waifulabs/discord.js-kuberscaler/internal/discord"
-	"github.com/waifulabs/discord.js-kuberscaler/internal/k8s"
+	discordv1alpha1 "github.com/kashalls/discord.js-kuberscaler/api/v1alpha1"
+	"github.com/kashalls/discord.js-kuberscaler/internal/discord"
+	"github.com/kashalls/discord.js-kuberscaler/internal/k8s"
 )
 
 const (

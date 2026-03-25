@@ -27,7 +27,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
-	"github.com/waifulabs/discord.js-kuberscaler/test/utils"
+	"github.com/kashalls/discord.js-kuberscaler/test/utils"
 )
 
 // namespace where the project is deployed in

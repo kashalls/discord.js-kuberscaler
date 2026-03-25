@@ -28,8 +28,8 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	discordv1alpha1 "github.com/waifulabs/discord.js-kuberscaler/api/v1alpha1"
-	"github.com/waifulabs/discord.js-kuberscaler/internal/discord"
+	discordv1alpha1 "github.com/kashalls/discord.js-kuberscaler/api/v1alpha1"
+	"github.com/kashalls/discord.js-kuberscaler/internal/discord"
 )
 
 var _ = Describe("DiscordSharder Controller", func() {

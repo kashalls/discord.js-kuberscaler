@@ -19,7 +19,7 @@ package controller
 import (
 	"testing"
 
-	discordv1alpha1 "github.com/waifulabs/discord.js-kuberscaler/api/v1alpha1"
+	discordv1alpha1 "github.com/kashalls/discord.js-kuberscaler/api/v1alpha1"
 )
 
 func TestCalculateDesiredShards(t *testing.T) {
