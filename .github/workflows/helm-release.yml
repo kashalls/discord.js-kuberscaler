@@ -62,7 +62,7 @@ jobs:
           sed -i "s/^version:.*/version: ${VERSION}/" ${{ env.CHART_PATH }}/Chart.yaml
           # Patch appVersion to match image tag when on a release tag
           if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
-            APP_VERSION="${GITHUB_REF_NAME}"
+            APP_VERSION="${GITHUB_REF_NAME#v}"
             sed -i "s/^appVersion:.*/appVersion: \"${APP_VERSION}\"/" ${{ env.CHART_PATH }}/Chart.yaml
           fi
 
