@@ -18,6 +18,9 @@ package controller
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -63,6 +66,12 @@ const (
 
 	// defaultSyncInterval is used when spec.syncInterval is not set.
 	defaultSyncInterval = 12 * time.Hour
+
+	// specHashAnnotation stores a hash of the StatefulSet spec the operator last
+	// applied. It lets the controller detect drift in any managed field (replica
+	// count, pod template, update strategy) with a single comparison instead of a
+	// brittle field-by-field diff against an API-server-defaulted object.
+	specHashAnnotation = "discord.ok8.sh/spec-hash"
 )
 
 // DiscordSharderReconciler reconciles a DiscordSharder object
@@ -481,23 +490,40 @@ func (r *DiscordSharderReconciler) ensureStatefulSet(ctx context.Context, gatewa
 		return fmt.Errorf("failed to set owner reference: %w", err)
 	}
 
-	existingSts := &appsv1.StatefulSet{}
-	err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: gateway.Namespace}, existingSts)
+	// Stamp a hash of the desired spec so future reconciles can detect drift in
+	// any managed field — not just the replica count.
+	hash, err := specHash(desiredSts)
+	if err != nil {
+		return fmt.Errorf("failed to hash StatefulSet spec: %w", err)
+	}
+	if desiredSts.Annotations == nil {
+		desiredSts.Annotations = make(map[string]string)
+	}
+	desiredSts.Annotations[specHashAnnotation] = hash
 
-	if err != nil && apierrors.IsNotFound(err) {
+	existingSts := &appsv1.StatefulSet{}
+	getErr := r.Get(ctx, types.NamespacedName{Name: name, Namespace: gateway.Namespace}, existingSts)
+
+	if getErr != nil && apierrors.IsNotFound(getErr) {
 		logger.Info("Creating StatefulSet", "name", name, "replicas", replicas)
 		if createErr := r.Create(ctx, desiredSts); createErr != nil {
 			return fmt.Errorf("failed to create StatefulSet: %w", createErr)
 		}
 		return nil
-	} else if err != nil {
-		return fmt.Errorf("failed to get StatefulSet: %w", err)
+	} else if getErr != nil {
+		return fmt.Errorf("failed to get StatefulSet: %w", getErr)
 	}
 
-	// Sync all mutable fields if the replica count has drifted.
-	if existingSts.Spec.Replicas == nil || *existingSts.Spec.Replicas != replicas {
+	// Sync all mutable fields if the desired spec has drifted from what we last
+	// applied. This propagates pod template changes (image, resources, env, …)
+	// as well as replica count changes.
+	if existingSts.Annotations[specHashAnnotation] != hash {
 		logger.Info("Updating StatefulSet", "name", name, "replicas", replicas)
 		existingSts.Labels = desiredSts.Labels
+		if existingSts.Annotations == nil {
+			existingSts.Annotations = make(map[string]string)
+		}
+		existingSts.Annotations[specHashAnnotation] = hash
 		existingSts.Spec.Replicas = desiredSts.Spec.Replicas
 		existingSts.Spec.Template = desiredSts.Spec.Template
 		existingSts.Spec.UpdateStrategy = desiredSts.Spec.UpdateStrategy
@@ -508,6 +534,18 @@ func (r *DiscordSharderReconciler) ensureStatefulSet(ctx context.Context, gatewa
 	}
 
 	return nil
+}
+
+// specHash returns a stable hex-encoded SHA-256 of the StatefulSet's spec. It is
+// used to detect whether the operator-managed spec has drifted from what was last
+// applied without diffing against an API-server-defaulted object field by field.
+func specHash(sts *appsv1.StatefulSet) (string, error) {
+	data, err := json.Marshal(sts.Spec)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:]), nil
 }
 
 // activeSTSName returns the name of the currently active StatefulSet.
