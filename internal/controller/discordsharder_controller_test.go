@@ -161,6 +161,35 @@ var _ = Describe("DiscordSharder Controller", func() {
 			Expect(gw.Status.AppliedShards).To(Equal(int32(3)))
 		})
 
+		It("should propagate pod template changes to the StatefulSet when the shard count is unchanged", func() {
+			By("Reconciling to create the initial StatefulSet")
+			controllerReconciler := &DiscordSharderReconciler{
+				Client:        k8sClient,
+				Scheme:        k8sClient.Scheme(),
+				DiscordClient: discord.NewMockClient(),
+			}
+			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+			Expect(err).NotTo(HaveOccurred())
+
+			sts := &appsv1.StatefulSet{}
+			Expect(k8sClient.Get(ctx, typeNamespacedName, sts)).To(Succeed())
+			Expect(sts.Spec.Template.Spec.Containers[0].Image).To(Equal("test:latest"))
+
+			By("Changing the container image in the DiscordSharder template (same shard count)")
+			gw := &discordv1alpha1.DiscordSharder{}
+			Expect(k8sClient.Get(ctx, typeNamespacedName, gw)).To(Succeed())
+			gw.Spec.Template.Spec.Containers[0].Image = "test:v2"
+			Expect(k8sClient.Update(ctx, gw)).To(Succeed())
+
+			By("Reconciling again")
+			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Verifying the StatefulSet pod template image was updated")
+			Expect(k8sClient.Get(ctx, typeNamespacedName, sts)).To(Succeed())
+			Expect(sts.Spec.Template.Spec.Containers[0].Image).To(Equal("test:v2"))
+		})
+
 		It("should reject an invalid sharding config where minShards exceeds maxShards", func() {
 			By("Creating a DiscordSharder with minShards > maxShards")
 			invalidName := "invalid-sharding"
